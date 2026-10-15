@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """Vibetrad ugekørsel – kører det rigtige HKUDS/Vibe-Trading og krypterer resultatet.
 
-Kører i GitHub Actions hver lørdag kl. 08:00 svensk tid (se
-.github/workflows/vibetrad-weekly.yml). Flowet:
+Kører i GitHub Actions på knaptryk (se .github/workflows/vibetrad-weekly.yml). Flowet:
 
-1. Afgør om der skal køres (lørdag, efter 08:00 Stockholm, ugen ikke allerede kørt).
+1. Afgør om der skal køres (knaptryk kører altid; lørdagskørsel kun med VT_SCHEDULE=on).
 2. Læser porteføljen fra secret VT_PORTFOLIO (JSON, genereres af Vibetrad-siden).
-3. Lægger en plan efter spillebogen:
-   - hver uge: portfolio_review_board
-   - første lørdag i måneden: risk_committee
-   - regnskab inden for 14 dage: earnings_research_desk for den nærmeste
-4. Kører swarms med Vibe-Tradings egen SwarmRuntime (samme motor som web-UI og CLI).
-5. Pakker rapporter og agent-opsummeringer, gzip'er og krypterer med AES-256-GCM
+3. Kobler EODHD ind i Vibe-Trading og krydstjekker porteføljens kurser, valuta,
+   regnskabsdatoer og værdi mellem Vibe-Tradings egne kilder og EODHD (datatjek.py).
+4. Lægger en plan efter spillebogen (risiko, regnskab, månedens team, rotation, CIO).
+5. Kører swarms med Vibe-Tradings egen SwarmRuntime (samme motor som web-UI og CLI).
+   Alle agenter får datatjekkets facit; CIO'en også afvigelserne.
+6. Pakker rapporter, datatjek og agent-opsummeringer, gzip'er og krypterer med AES-256-GCM
    (nøgle afledt af VT_RESULTS_PASSPHRASE via PBKDF2-SHA256), og skriver
-   results/latest.enc.json + results/weeks/<uge>.enc.json + results/index.json.
+   results/latest.enc.json + results/weeks/<run-id>.enc.json + results/index.json.
 
 Repoet er offentligt, så intet personligt må nå loggen: al output fra
 Vibe-Trading omdirigeres til en midlertidig fil, og kun status-linjer uden
@@ -39,6 +38,11 @@ from types import SimpleNamespace
 from typing import Any, Callable, Iterable
 from zoneinfo import ZoneInfo
 
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+import datatjek as dtj  # noqa: E402  (krydstjek Vibe-Trading × EODHD)
+import eodhd as eo  # noqa: E402  (EODHD-klient og -integration i Vibe-Trading)
+
 STO = ZoneInfo("Europe/Stockholm")
 SCHEMA = 1
 PBKDF2_ITER = 600_000
@@ -46,13 +50,92 @@ MIN_PASSPHRASE = 16
 MAX_ENVELOPE_BYTES = 240_000  # artifact-db dokumenter må højst være 256 KiB
 
 PRESET_LABELS = {
-    "portfolio_review_board": "Porteføljegennemgang",
+    "portfolio_review_board": "Porteføljegennemgang (CIO)",
     "risk_committee": "Risikoudvalg",
     "earnings_research_desk": "Regnskabsdesk",
     "investment_committee": "Investeringskomité",
     "etf_allocation_desk": "ETF-allokering",
     "sentiment_intelligence_team": "Sentiment",
+    "technical_analysis_panel": "Teknisk analyse",
+    "macro_rates_fx_desk": "Makro, renter og valuta",
+    "fund_selection_panel": "Fondsvalg (ISK-kerne)",
+    "value_investing_committee": "Værdikomité (Buffett/Munger m.fl.)",
+    "equity_research_team": "Idéjagt uden for tech",
+    "fundamental_research_team": "Fundamental analyse",
 }
+
+# Ekstra Vibe-Trading-skills, der lægges på bestemte agenter (agent-id → skills).
+# "*last*" er det sidste (syntetiserende) agent-trin i hvert preset.
+EXTRA_SKILLS = {
+    "*": {"*last*": ["research-discipline"]},
+    "portfolio_review_board": {"chief_investment_officer": ["thesis-tracker", "investor-lenses", "research-discipline",
+                                                            "private-company-research"]},
+    "risk_committee": {"drawdown_analyst": ["risk-analysis"], "tail_risk_analyst": ["risk-analysis", "hedging-strategy"],
+                       "regime_detector": ["correlation-regime"], "aggregator": ["risk-analysis", "hedging-strategy"]},
+    "investment_committee": {"*last*": ["thesis-tracker", "research-discipline"]},
+    "value_investing_committee": {"*last*": ["thesis-tracker", "management-deep-dive", "private-company-research"]},
+    # SpaceX er nyligt børsnoteret: rammen for pre-IPO/private selskaber (6 analytiker-vinkler) hjælper, hvor historikken er kort.
+    "earnings_research_desk": {"*last*": ["private-company-research"]},
+    "fundamental_research_team": {"*last*": ["private-company-research", "thesis-tracker"]},
+}
+SPACEX_HINT = (" Selskabet er nyligt børsnoteret med kort kurs- og regnskabshistorik: brug skill'en "
+               "private-company-research (load_skill) som supplerende ramme.")
+# Ekstra værktøjer pr. preset → agent-id. "*" = alle agenter i presettet, "*data*" = agenter med get_market_data.
+# Preset-nøglen "*" gælder alle presets. Værktøjer, der ikke er tilgængelige (fx get_macro_series uden
+# FRED_API_KEY, get_eodhd_data uden EODHD_API_KEY), udelades stille af Vibe-Trading.
+EXTRA_TOOLS = {
+    "*": {"*data*": ["get_eodhd_data"]},
+    "portfolio_review_board": {"chief_investment_officer": ["report_audit", "financial_rigor", "get_market_data",
+                                                            "get_eodhd_data", "etf_holdings"]},
+    "risk_committee": {"*data*": ["portfolio_risk_xray"]},
+    "earnings_research_desk": {"*": ["get_stock_profile", "get_sec_filings", "get_financial_statements",
+                                     "get_stock_news", "get_eodhd_data"]},
+    "macro_rates_fx_desk": {"*": ["get_macro_series", "get_eodhd_data"]},
+    "sentiment_intelligence_team": {"*": ["get_stock_news", "sentiment", "web_search", "get_eodhd_data"]},
+    "value_investing_committee": {"*": ["get_stock_profile", "get_sec_filings", "get_eodhd_data"]},
+    "fundamental_research_team": {"*": ["get_sec_filings", "get_fundamentals", "get_eodhd_data"]},
+    "investment_committee": {"*": ["get_stock_profile", "get_sec_filings", "get_eodhd_data"]},
+    "equity_research_team": {"*": ["get_stock_profile", "get_financial_statements", "get_eodhd_data"]},
+    "etf_allocation_desk": {"*": ["etf_holdings", "get_eodhd_data"]},
+    "fund_selection_panel": {"*": ["get_eodhd_data"]},
+    "technical_analysis_panel": {"*": ["get_eodhd_data"]},
+}
+DATA_GUIDANCE = """
+
+## Data sources (Vibetrad)
+Two independent sources are available: Vibe-Trading's own loaders (`get_market_data`, Yahoo first) and EODHD
+(`get_eodhd_data`). Nordic and European listings (e.g. NOVO-B.CO, INVE-B.ST, EQNR.OL, SAP.DE) are served through EODHD.
+Use `get_eodhd_data` for fundamentals, earnings dates, news sentiment, dividends/splits, macro series, the economic
+calendar (Fed/Riksbank), government bond yields (US10Y.GBOND, SE10Y.GBOND), FX (USDSEK.FOREX) and screening of Nordic and
+European stocks. If two sources disagree by more than 1 %, report both numbers and the date.
+The `backtest` tool does not model Nordic/European markets in this Vibe-Trading version (it would treat them as China
+A-shares): never backtest such symbols; use their US listing/ETF or compute returns from `get_eodhd_data` eod data.
+"""
+EXTRA_PROMPT = {"portfolio_review_board": {"chief_investment_officer": """
+
+## Faktatjek før aflevering (Vibetrad)
+Before you finish, audit your own report: run `report_audit` with command='extract' on your draft, verify every sampled
+figure with `get_market_data` (prices) or `financial_rigor` (arithmetic), then run command='verdict'. End the report with a
+line "Faktatjek: PASS" or "Faktatjek: FAIL – <what was wrong and how you corrected it>". Never present an inference
+(e.g. whether an order 'should have filled') as a fact; label it as an inference and say what would confirm it.
+Compare your prices, weights and dates with the "Vibetrad datatjek" table in your instructions (cross-checked between
+Vibe-Trading and EODHD) and add a short section "Datakvalitet" saying which data gaps or disagreements matter.
+"""}}
+
+# Rækkefølge i rapporten og som input til CIO'en (CIO kører altid sidst).
+CORE = ("risk_committee", "portfolio_review_board")
+SHELL_TOOLS = {"bash", "background_run", "cancel_background"}
+QUANT_TOOLS = ["quantlib_call", "portfolio_risk_xray", "financial_rigor", "technical_indicators", "get_market_data"]
+NO_SHELL_GUIDANCE = """
+
+## Execution environment (Vibetrad)
+Shell access is DISABLED here: never try to write or run Python or bash scripts, and never answer with a plan to compute something later.
+Do every calculation with the built-in tools:
+- `portfolio_risk_xray` - portfolio volatility, max drawdown, historical VaR / expected shortfall, correlation, beta, concentration (pass symbols and weights).
+- `quantlib_call` - tested finance maths: VaR/CVaR/EVT and VaR backtests, GARCH, regime switching, stationarity, Brinson attribution, event studies, DCF/comps valuation. Start with action='list', then 'describe', then call.
+- `technical_indicators`, `financial_rigor` (exact arithmetic, bull/base/bear targets) and `get_market_data` for prices.
+Report the numbers you computed, the inputs and the data window. If a figure truly cannot be computed, say exactly why and continue with what you have.
+"""
 
 DEFAULT_GOAL = (
     "Gør porteføljen mere robust: maks. 10 % pr. enkeltaktie, mindre korrelation "
@@ -99,6 +182,20 @@ def quiet_fds(log_path: Path):
             os.close(saved[1])
 
 
+def silence_rest(log_path: Path) -> None:
+    """Send fd 1 og 2 til log_path resten af processen.
+
+    Swarm-tråde, der fortsætter efter en tidsgrænse, kan ellers skrive til den offentlige
+    GitHub-log, når quiet_fds er forladt. Console skriver stadig til den oprindelige stdout.
+    """
+    sys.stdout.flush()
+    sys.stderr.flush()
+    fd = os.open(str(log_path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    os.dup2(fd, 1)
+    os.dup2(fd, 2)
+    os.close(fd)
+
+
 # ---------------------------------------------------------------------------
 # Tid og uge
 # ---------------------------------------------------------------------------
@@ -113,34 +210,45 @@ def dmy(d: dt.date) -> str:
     return d.strftime("%d/%m/%Y")
 
 
-def week_window(ref: dt.datetime) -> dict:
-    """Den senest afsluttede amerikanske handelsuge (mandag–fredag) set fra ref."""
+def last_us_close(ref: dt.datetime) -> dt.date:
+    """Seneste amerikanske handelsdag med en afsluttet lukkekurs (NYSE lukker 22:00 svensk tid)."""
     d = ref.date()
-    # fredag i samme uge hvis ref er lørdag/søndag, ellers forrige fredag
-    back = (d.weekday() - 4) % 7
-    if back == 0 and ref.hour < 23:  # fredag før lukning tæller ikke som afsluttet
-        back = 7
-    friday = d - dt.timedelta(days=back)
-    monday = friday - dt.timedelta(days=4)
+    if ref.weekday() >= 5 or ref.hour < 22:
+        d -= dt.timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= dt.timedelta(days=1)
+    return d
+
+
+def week_window(ref: dt.datetime) -> dict:
+    """Den aktuelle ISO-uge set fra ref, med de handelsdage der er afsluttet.
+
+    Lørdag/søndag: hele ugen mandag–fredag. Tirsdag–fredag: mandag til seneste lukkekurs
+    (ugen til dato). Mandag før lukning har ugen ingen handelsdage endnu, så forrige uge bruges.
+    """
+    end = last_us_close(ref)
+    monday = end - dt.timedelta(days=end.weekday())
+    friday = monday + dt.timedelta(days=4)
     iso = monday.isocalendar()
-    return {
-        "id": f"{iso.year}-W{iso.week:02d}",
-        "from": monday.isoformat(),
-        "to": friday.isoformat(),
-        "label": f"Uge {iso.week} · {dmy(monday)}–{dmy(friday)}",
-    }
+    full = end >= friday
+    label = f"Uge {iso.week} · {dmy(monday)}–{dmy(end)}" + ("" if full else " (ugen til dato)")
+    return {"id": f"{iso.year}-W{iso.week:02d}", "from": monday.isoformat(), "to": end.isoformat(),
+            "full": full, "label": label}
 
 
 def should_run(ref: dt.datetime, latest_meta: dict | None, event: str, force: bool) -> tuple[bool, str]:
     week = week_window(ref)
     if force or event == "workflow_dispatch":
         return True, "manuel kørsel"
+    if event == "schedule" and os.environ.get("VT_SCHEDULE", "off").strip().lower() != "on":
+        return False, "automatisk lørdagskørsel er slået fra (repo-variablen VT_SCHEDULE er ikke 'on') – kør på knaptryk"
     if ref.weekday() != 5:
         return False, "ikke lørdag i Stockholm"
     if ref.hour < 8:
         return False, f"kun {ref:%H:%M} i Stockholm – venter til 08:00"
-    if latest_meta and latest_meta.get("week_id") == week["id"] and latest_meta.get("status") in ("ok", "partial"):
-        return False, f"{week['id']} er allerede kørt"
+    if (latest_meta and latest_meta.get("week_id") == week["id"] and latest_meta.get("status") in ("ok", "partial")
+            and str(latest_meta.get("week_to") or "") >= week["to"] and not latest_meta.get("dry_run")):
+        return False, f"{week['id']} er allerede kørt for hele ugen"
     return True, "planlagt lørdagskørsel"
 
 
@@ -240,7 +348,9 @@ def yf_next_report(ticker: str) -> dt.date | None:
 
 
 def upcoming_reports(p: dict, ref: dt.datetime, horizon_days: int = 14,
-                     lookup: Callable[[str], dt.date | None] | None = yf_next_report) -> list[dict]:
+                     lookup: Callable[[str], dt.date | None] | None = yf_next_report,
+                     verified: dict[str, str] | None = None) -> list[dict]:
+    """Regnskaber inden for horisonten. ``verified`` er datatjekkets krydstjekkede datoer og vinder."""
     today = ref.date()
     found = []
     for h in p["holdings"]:
@@ -248,7 +358,10 @@ def upcoming_reports(p: dict, ref: dt.datetime, horizon_days: int = 14,
             continue
         raw = (p.get("next_reports") or {}).get(h["ticker"])
         d, src = None, None
-        if raw:
+        if verified and verified.get(h["ticker"]):
+            with contextlib.suppress(ValueError):
+                d, src = dt.date.fromisoformat(verified[h["ticker"]][:10]), "datatjek"
+        if d is None and raw:
             try:
                 d, src = dt.date.fromisoformat(str(raw)[:10]), "portefølje"
             except ValueError:
@@ -262,38 +375,233 @@ def upcoming_reports(p: dict, ref: dt.datetime, horizon_days: int = 14,
     return sorted(found, key=lambda x: x["date"])
 
 
-def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 3, force_risk: bool = False,
-               reports: list[dict] | None = None) -> list[dict]:
+def market_of(ticker: str) -> str:
+    t = ticker.upper()
+    return {"CO": "Danmark (Nasdaq Copenhagen)", "ST": "Sverige (Nasdaq Stockholm)", "HE": "Finland",
+            "OL": "Norge", "US": "USA"}.get(t.rsplit(".", 1)[-1], "global")
+
+
+def last_done(history: list[dict] | None, preset: str) -> str:
+    """Tidspunkt for seneste rigtige kørsel, hvor preset blev gennemført ('' = aldrig)."""
+    return max((str(w.get("generated_at", "")) for w in history or []
+                if preset in (w.get("presets") or []) and not w.get("dry_run")), default="")
+
+
+def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, plan_kind: str = "fuld",
+               reports: list[dict] | None = None, force_risk: bool = False,
+               history: list[dict] | None = None, by_date: bool | None = None) -> list[dict]:
+    """Ugens plan. Rækkefølge: risiko → dybdeanalyser → CIO (som får de andres konklusioner)."""
     goal = (p.get("goal") or DEFAULT_GOAL).strip()
     ptxt = portfolio_text(p)
-    plan = [{
-        "preset": "portfolio_review_board",
-        "reason": "Fast ugentlig gennemgang (spillebog: hver uge)",
-        "vars": {
-            "portfolio": ptxt,
-            "review_period": f"Seneste amerikanske handelsuge {dmy(dt.date.fromisoformat(week['from']))}–{dmy(dt.date.fromisoformat(week['to']))}",
-            "goal": goal + LANG_SUFFIX,
-        },
+    period = f"{dmy(dt.date.fromisoformat(week['from']))}–{dmy(dt.date.fromisoformat(week['to']))}"
+    stocks = [h for h in p["holdings"] if h["kind"] not in ("cash", "fund", "etf")]
+    biggest = max(stocks or p["holdings"], key=lambda h: h["cost_sek"] or 0)
+    weights = cost_weights(p)
+    wtxt = ", ".join(f"{w['ticker']} {w['weight_cost_pct']:g} %" for w in weights if w["weight_cost_pct"] is not None)
+    iso_week = dt.date.fromisoformat(week["from"]).isocalendar().week
+
+    plan: list[dict] = [{
+        "preset": "risk_committee", "reason": "Fast ugentligt risikoudvalg (spillebog)",
+        "vars": {"goal": (
+            f"Vurdér drawdown, halerisiko og markedsregime for denne portefølje (periode {period}):\n{ptxt}\n"
+            f"Vægte efter anskaffelse: {wtxt}. Brug portfolio_risk_xray på disse symboler og vægte, og quantlib_call til "
+            f"VaR/CVaR/EVT og regime. Stresstest: −30 % i {biggest['name']} ({biggest['ticker']}), −20 % i amerikansk "
+            "tech samlet, og +10 % SEK mod USD. Hvad er det samlede tab i SEK, og hvilke ændringer sænker risikoen mest?"
+            + LANG_SUFFIX)},
     }]
-    if ref.day <= 7 or force_risk:
-        biggest = max(p["holdings"], key=lambda h: h["cost_sek"] or 0)
-        plan.append({
-            "preset": "risk_committee",
-            "reason": "Første lørdag i måneden (spillebog: månedligt risikoudvalg)",
-            "vars": {"goal": (
-                f"Vurdér drawdown, halerisiko og markedsregime for denne portefølje:\n{ptxt}\n"
-                f"Stresstest: −30 % i {biggest['name']} ({biggest['ticker']}), −20 % i amerikansk tech samlet, "
-                "og +10 % SEK mod USD. Hvad er det samlede tab i SEK, og hvilke ændringer sænker risikoen mest?"
-                + LANG_SUFFIX)},
-        })
-    for r in (reports or [])[:1]:
-        plan.append({
-            "preset": "earnings_research_desk",
-            "reason": f"Regnskab {dmy(dt.date.fromisoformat(r['date']))} inden for 14 dage (spillebog: før hvert regnskab)",
-            "vars": {"target": f"{r['ticker']} (regnskab {dmy(dt.date.fromisoformat(r['date']))}; skriv på dansk, beløb også i SEK)"},
-            "context": r,
-        })
-    return plan[:max(1, max_swarms)]
+    if plan_kind == "fuld":
+        for r in (reports or [])[:2]:
+            plan.append({
+                "preset": "earnings_research_desk",
+                "reason": f"Regnskab {dmy(dt.date.fromisoformat(r['date']))} (spillebog: før hvert regnskab)",
+                "vars": {"target": f"{r['ticker']} (regnskab {dmy(dt.date.fromisoformat(r['date']))}; skriv på dansk, beløb også i SEK)"
+                                   + (SPACEX_HINT if r["ticker"].startswith("SPCX") else "")},
+                "context": r,
+            })
+        wl = [w for w in p.get("watchlist") or [] if isinstance(w, dict) and w.get("ticker")]
+        nth = (ref.day - 1) // 7 + 1  # hvilken lørdag i måneden (1–5)
+        month_idx = ref.year * 12 + ref.month
+        focus = stocks[month_idx % len(stocks)] if stocks else biggest
+        monthly = {
+            1: {"preset": "etf_allocation_desk", "reason": "Månedens 1. lørdag: ETF-allokering (kerne og spredning)",
+                "vars": {"risk_profile": "moderat, langsigtet, ingen gearing, svensk ISK i SEK hos Nordnet",
+                         "market": (f"globale ETF'er, der kan købes via Nordnet. Find dem, der sænker korrelationen mest "
+                                    f"til en portefølje med {wtxt}. Skriv på dansk, beløb i SEK.")}},
+            2: {"preset": "macro_rates_fx_desk", "reason": "Månedens 2. lørdag: makro, renter og USD/SEK",
+                "vars": {"goal": (f"Svensk investor med basisvaluta SEK og næsten al eksponering i amerikanske aktier ({wtxt}). "
+                                  "Vurdér Fed/Riksbanken, USD/SEK-retning og om valutarisikoen bør afdækkes eller spredes. "
+                                  "Skriv på dansk, beløb i SEK."),
+                         "timeframe": "1–6 måneder"}},
+            3: {"preset": "fund_selection_panel", "reason": "Månedens 3. lørdag: konkrete kernefonde til ISK",
+                "vars": {"fund_type": "globale indeksfonde og ETF'er, der kan købes på Nordnet ISK (globale, Europa, Norden, small cap, value)",
+                         "goal": (f"Find 2–3 lavomkostnings-kernefonde, der sænker korrelationen til en portefølje med {wtxt}, "
+                                  "med omkostninger, tracking og risiko. Skriv på dansk, beløb i SEK.")}},
+            4: {"preset": "value_investing_committee", "reason": f"Månedens 4. lørdag: værdikomité på {focus['name']}",
+                "vars": {"company": focus["ticker"], "market": f"{market_of(focus['ticker'])}. Skriv på dansk, beløb også i SEK."
+                                   + (SPACEX_HINT if focus["ticker"].startswith("SPCX") else "")}},
+            5: {"preset": "equity_research_team", "reason": "Månedens 5. lørdag: idéjagt uden for tech",
+                "vars": {"market": "Norden og Europa, ikke-tech (sundhed, forbrug, industri, finans)",
+                         "goal": (f"Find 3–5 kvalitetsaktier, der spreder en portefølje med {wtxt}. "
+                                  "Skriv på dansk, DD/MM/YYYY, beløb i SEK.")}},
+        }
+        if by_date is None:
+            by_date = ref.weekday() == 5
+        forced = os.environ.get("VT_MONTHLY_SLOT", "").strip()
+        if forced.isdigit() and int(forced) in monthly:
+            slot = int(forced)
+        elif by_date:
+            slot = nth
+        else:  # knaptryk: det månedsteam, der er længst tid siden har kørt
+            slot = min(monthly, key=lambda k: (last_done(history, monthly[k]["preset"]), k))
+        if slot in monthly:
+            plan.append(monthly[slot])
+        rot_presets = ["investment_committee" if wl else "fundamental_research_team",
+                       "sentiment_intelligence_team", "technical_analysis_panel"]
+        rot = (iso_week % 3 if by_date or not history
+               else min(range(3), key=lambda i: (last_done(history, rot_presets[i]), i)))
+        if rot == 0:
+            if wl:
+                cand = wl[(iso_week // 3) % len(wl)]
+                plan.append({
+                    "preset": "investment_committee",
+                    "reason": f"Købskandidat fra overvågningslisten: {cand['ticker']} (spillebog: før hvert køb)",
+                    "vars": {"target": cand["ticker"], "market": (
+                        f"{market_of(cand['ticker'])}. Vurdér som spredning til en portefølje med {wtxt}. "
+                        f"Note: {cand.get('note', '')}. Skriv på dansk, DD/MM/YYYY, beløb også i SEK.")},
+                    "context": {"ticker": cand["ticker"]},
+                })
+            else:
+                plan.append({"preset": "fundamental_research_team", "reason": f"Fundamental analyse af {focus['name']}",
+                             "vars": {"target": focus["ticker"], "market": f"{market_of(focus['ticker'])}. Skriv på dansk."
+                                      + (SPACEX_HINT if focus["ticker"].startswith("SPCX") else "")}})
+        elif rot == 1:
+            plan.append({
+                "preset": "sentiment_intelligence_team",
+                "reason": "Sentiment (rotation hver 3. uge)",
+                "vars": {"market": "Amerikansk tech/AI: " + ", ".join(h["ticker"] for h in stocks) + ". Skriv på dansk.",
+                         "timeframe": "seneste 1–4 uger"},
+            })
+        else:
+            plan.append({
+                "preset": "technical_analysis_panel",
+                "reason": f"Teknisk analyse af største position (rotation hver 3. uge): {biggest['name']}",
+                "vars": {"target": biggest["ticker"], "timeframe": "daglig og ugentlig, 6–12 måneder. Skriv på dansk."},
+            })
+    plan.append({
+        "preset": "portfolio_review_board", "reason": "Fast ugentlig CIO-gennemgang, der samler ugens agent-teams",
+        "vars": {"portfolio": ptxt, "review_period": f"Uge {iso_week}: {period}", "goal": goal + LANG_SUFFIX},
+        "cio": True,
+    })
+    skip = {x.strip() for x in os.environ.get("VT_SKIP_PRESETS", "").split(",") if x.strip()}
+    if force_risk:
+        skip.discard("risk_committee")
+    plan = [s for s in plan if s["preset"] not in skip or s.get("cio")]
+    if len(plan) > max(1, max_swarms):  # behold altid CIO'en
+        plan = plan[:max(1, max_swarms) - 1] + [plan[-1]]
+    return plan
+
+
+def cio_goal_with_inputs(base_goal: str, runs: list[dict], limit: int = 9000) -> str:
+    """Giv CIO'en de øvrige teams' konklusioner, så syntesen bygger på hele ugens arbejde."""
+    parts = []
+    for r in runs:
+        if r.get("status") == "completed" and r.get("final_report"):
+            parts.append(f"### {r.get('label', r['preset'])}\n{r['final_report'][:3000]}")
+    if not parts:
+        return base_goal
+    extra = "\n\nKonklusioner fra ugens øvrige Vibe-Trading-teams (brug dem i syntesen, og sig hvor du er uenig):\n" + "\n\n".join(parts)
+    return base_goal + extra[:limit]
+
+
+# Værktøjer, der kun kan bruges med en nøgle. Uden nøglen tilføjes de ikke (så agenterne ikke lover data, de ikke kan hente).
+TOOL_REQUIRES = {"get_eodhd_data": ("EODHD_API_KEY", "EODHD_API_TOKEN"), "get_macro_series": ("FRED_API_KEY",)}
+
+
+def _tool_usable(name: str) -> bool:
+    need = TOOL_REQUIRES.get(name)
+    return not need or any(os.environ.get(k, "").strip() for k in need)
+
+
+def _extra_tools_for(preset: str, agent: dict) -> list[str]:
+    tools = set(agent.get("tools") or [])
+    out: list[str] = []
+    for key in ("*", preset):
+        rules = EXTRA_TOOLS.get(key, {})
+        out += rules.get("*", []) + rules.get(agent.get("id"), [])
+        if "get_market_data" in tools:
+            out += rules.get("*data*", [])
+    return [t for t in dict.fromkeys(out) if t not in tools and _tool_usable(t)]
+
+
+def prepare_shellfree_presets(dst: Path, src: Path | None = None, brief: str = "",
+                              eodhd_ready: bool | None = None) -> list[str]:
+    """Kopiér Vibe-Tradings presets til brugermappen med kvant-værktøjer i stedet for shell.
+
+    Vibe-Trading læser brugermappen før de indbyggede presets, så samme navne bruges.
+    Agenter, der var afhængige af bash, får quantlib_call, portfolio_risk_xray m.fl. og en
+    instruks om at regne med dem. Agenter med data-værktøjer får EODHD som anden kilde, og alle
+    agenter får datatjekkets facit (``brief``). Returnerer navnene på de presets der blev ændret.
+    """
+    import yaml
+
+    if src is None:
+        from src.swarm import presets as _p
+
+        src = Path(_p.PRESETS_DIR)
+    dst.mkdir(parents=True, exist_ok=True)
+    changed = []
+    for f in sorted(Path(src).glob("*.yaml")):
+        spec = yaml.safe_load(f.read_text("utf-8"))
+        touched = False
+        agents = spec.get("agents", [])
+        for i, agent in enumerate(agents):
+            tools = list(agent.get("tools") or [])
+            if SHELL_TOOLS & set(tools):
+                kept = [t for t in tools if t not in SHELL_TOOLS]
+                agent["tools"] = kept + [t for t in QUANT_TOOLS if t not in kept]
+                agent["system_prompt"] = str(agent.get("system_prompt", "")).rstrip() + NO_SHELL_GUIDANCE
+                touched = True
+            add_tools = _extra_tools_for(f.stem, agent)
+            if eodhd_ready is False:  # EODHD blev ikke koblet på: lov ikke agenterne et værktøj, de ikke har
+                add_tools = [t for t in add_tools if t != "get_eodhd_data"]
+            if add_tools:
+                agent["tools"] = list(agent.get("tools") or []) + add_tools
+                touched = True
+            if "get_eodhd_data" in (agent.get("tools") or []):
+                agent["system_prompt"] = str(agent.get("system_prompt", "")).rstrip() + DATA_GUIDANCE
+                touched = True
+            if brief:
+                agent["system_prompt"] = str(agent.get("system_prompt", "")).rstrip() + "\n\n" + brief.strip() + "\n"
+                touched = True
+            add_prompt = EXTRA_PROMPT.get(f.stem, {}).get(agent.get("id"))
+            if add_prompt:
+                agent["system_prompt"] = str(agent.get("system_prompt", "")).rstrip() + add_prompt
+                touched = True
+            extra: list[str] = []
+            for key in ("*", f.stem):
+                rules = EXTRA_SKILLS.get(key, {})
+                extra += rules.get(agent.get("id"), []) + (rules.get("*last*", []) if i == len(agents) - 1 else [])
+            new = [x for x in dict.fromkeys(extra) if x not in (agent.get("skills") or [])]
+            if new:
+                agent["skills"] = list(agent.get("skills") or []) + new
+                if "load_skill" not in (agent.get("tools") or []):
+                    agent["tools"] = list(agent.get("tools") or []) + ["load_skill"]
+                touched = True
+        if touched:
+            (dst / f.name).write_text(yaml.safe_dump(spec, allow_unicode=True, sort_keys=False), "utf-8")
+            changed.append(f.stem)
+    return changed
+
+
+def month_spent(results: Path, ref: dt.datetime) -> float:
+    """Samlet estimeret forbrug (USD) for rigtige kørsler i indeværende kalendermåned."""
+    try:
+        ledger = json.loads((results / "ledger.json").read_text("utf-8"))
+    except Exception:
+        return 0.0
+    ym = ref.strftime("%Y-%m")
+    return round(sum(float(e.get("cost_usd") or 0) for e in ledger.get("runs", [])
+                     if str(e.get("generated_at", "")).startswith(ym) and not e.get("dry_run")), 2)
 
 
 # ---------------------------------------------------------------------------
@@ -436,18 +744,27 @@ def write_results(results: Path, envelope: dict) -> None:
     pub = envelope["public"]
     (results / "weeks").mkdir(parents=True, exist_ok=True)
     body = json.dumps(envelope, ensure_ascii=False, indent=1) + "\n"
-    (results / "weeks" / f"{pub['week_id']}.enc.json").write_text(body, "utf-8")
+    rid = pub.get("run_id") or pub["week_id"]
+    (results / "weeks" / f"{rid}.enc.json").write_text(body, "utf-8")
     (results / "latest.enc.json").write_text(body, "utf-8")
     idx_f = results / "index.json"
     try:
         idx = json.loads(idx_f.read_text("utf-8"))
     except Exception:
         idx = {"schema": SCHEMA, "weeks": []}
-    idx["weeks"] = [w for w in idx.get("weeks", []) if w.get("week_id") != pub["week_id"]]
+    idx["weeks"] = [w for w in idx.get("weeks", []) if (w.get("run_id") or w.get("week_id")) != rid]
     idx["weeks"].insert(0, pub)
-    idx["weeks"] = sorted(idx["weeks"], key=lambda w: w["generated_at"], reverse=True)[:104]
-    idx["latest"] = pub["week_id"]
+    idx["weeks"] = sorted(idx["weeks"], key=lambda w: w["generated_at"], reverse=True)[:156]
+    idx["latest"] = rid
     idx_f.write_text(json.dumps(idx, ensure_ascii=False, indent=1) + "\n", "utf-8")
+    led_f = results / "ledger.json"
+    try:
+        led = json.loads(led_f.read_text("utf-8"))
+    except Exception:
+        led = {"schema": SCHEMA, "runs": []}
+    led["runs"].append({k: pub.get(k) for k in ("run_id", "generated_at", "week_id", "cost_usd", "status", "dry_run", "runs", "completed")})
+    led["runs"] = led["runs"][-400:]
+    led_f.write_text(json.dumps(led, ensure_ascii=False, indent=1) + "\n", "utf-8")
 
 
 def set_output(**kv: Any) -> None:
@@ -561,12 +878,20 @@ def main(argv: list[str] | None = None) -> int:
         set_output(ran="false", status="config_error", week=week["id"])
         return 2
 
-    max_swarms = int(os.environ.get("VT_MAX_SWARMS", "3"))
-    token_budget = int(os.environ.get("VT_TOKEN_BUDGET", "3000000"))
+    max_swarms = int(os.environ.get("VT_MAX_SWARMS", "6"))
+    run_budget = float(os.environ.get("VT_RUN_BUDGET_USD") or "35")
+    month_budget = float(os.environ.get("VT_MONTHLY_BUDGET_USD", "95"))
+    cio_reserve = float(os.environ.get("VT_CIO_RESERVE_USD", "8"))
+    min_swarm = float(os.environ.get("VT_MIN_SWARM_USD", "0.5"))
+    plan_kind = os.environ.get("VT_PLAN", "fuld").strip().lower() or "fuld"
     timeout_s = int(float(os.environ.get("VT_SWARM_TIMEOUT_MIN", "45")) * 60)
-    price_in = float(os.environ.get("VT_PRICE_IN_PER_MTOK", "3"))
-    price_out = float(os.environ.get("VT_PRICE_OUT_PER_MTOK", "15"))
+    price_in = float(os.environ.get("VT_PRICE_IN_PER_MTOK", "2"))
+    price_out = float(os.environ.get("VT_PRICE_OUT_PER_MTOK", "10"))
     iterations = int(os.environ.get("VT_PBKDF2_ITER", str(PBKDF2_ITER)))
+
+    spent_before = 0.0 if args.dry_run else month_spent(results, ref)
+    budget = max(0.0, min(run_budget, month_budget - spent_before))
+    con.say(f"Budget: {budget:.2f} USD til denne kørsel (brugt i måneden: {spent_before:.2f} af {month_budget:.0f} USD)")
 
     log_path = Path(tempfile.gettempdir()) / "vibetrad-vt.log"
     log_path.write_bytes(b"")
@@ -574,32 +899,92 @@ def main(argv: list[str] | None = None) -> int:
     runs: list[dict] = []
     t0 = time.monotonic()
 
+    # EODHD kobles ind i Vibe-Trading (datakilde, routing af nordiske symboler, agent-værktøj),
+    # og datatjekket krydstjekker porteføljens tal mellem de to kilder, før agenterne starter.
+    eodhd_info: dict = {"key": bool(eo.api_key())}
+    if not args.dry_run:
+        with quiet_fds(log_path):
+            try:
+                eodhd_info = eo.install_into_vibe_trading()
+            except Exception as exc:  # noqa: BLE001 - uden EODHD kører Vibe-Trading som før
+                eodhd_info = {"key": bool(eo.api_key()), "error": f"{type(exc).__name__}: {eo.redact(exc)}"[:500]}
+                errors.append({"stage": "eodhd", "type": type(exc).__name__, "message": eo.redact(str(exc))[:2000],
+                               "trace": eo.redact(traceback.format_exc())[-4000:]})
+        if eodhd_info.get("error"):
+            con.say("EODHD kunne ikke kobles på Vibe-Trading (detaljer krypteret i rapporten)")
+    datacheck: dict | None = None
+    if os.environ.get("VT_DATATJEK", "on").strip().lower() not in ("off", "0", "false", "nej"):
+        with quiet_fds(log_path):  # kilderne skriver advarsler, der kan nævne symboler
+            try:
+                vt_src = (dtj.DisabledSource("Vibe-Trading")
+                          if os.environ.get("VT_DATATJEK_VT", "on").strip().lower() == "off" else None)
+                if vt_src is None and args.dry_run and not dtj.VibeTradingSource().available:
+                    vt_src = dtj.DisabledSource("Vibe-Trading", "installeres ikke i en tørkørsel")
+                datacheck = dtj.run(portfolio, week, ref, vt=vt_src)
+            except Exception as exc:  # noqa: BLE001 - datatjekket må aldrig stoppe kørslen
+                errors.append({"stage": "datatjek", "type": type(exc).__name__, "message": eo.redact(str(exc))[:2000],
+                               "trace": eo.redact(traceback.format_exc())[-4000:]})
+        if datacheck:
+            c = datacheck["counts"]
+            s = datacheck["sources"]
+            acc = s["eodhd"].get("account") or {}
+            if not s["eodhd"]["available"]:
+                eod_txt = "nej (secret EODHD_API_KEY mangler)"
+            elif acc and not acc.get("ok") and not s["eodhd"]["calls"]:
+                eod_txt = "nøglen virker ikke" + (" (HTTP 401: forkert nøgle)" if "401" in str(acc.get("error")) else "")
+            else:
+                eod_txt = f"ja, nøglen virker ({s['eodhd']['calls']} kald)"
+            con.say(f"Datatjek: {datacheck['status']} · {c['ok']} ok, {c['warn']} advarsler, {c['fail']} fejl · "
+                    f"Vibe-Trading {'ja' if s['vibe_trading']['available'] else 'nej'} · EODHD {eod_txt}")
+        else:
+            con.say("Datatjek: kunne ikke gennemføres (detaljer krypteret i rapporten)")
+
+    horizon = int(os.environ.get("VT_EARNINGS_DAYS", "14"))
     with quiet_fds(log_path):  # yfinance skriver advarsler, der kan nævne symboler
-        reports = upcoming_reports(portfolio, ref, lookup=None if args.dry_run else yf_next_report)
-    plan = build_plan(portfolio, ref, week, max_swarms=max_swarms, force_risk=args.force_risk, reports=reports)
+        verified = dtj.verified_reports(datacheck)
+        reports = upcoming_reports(portfolio, ref, horizon_days=horizon,
+                                   lookup=None if args.dry_run or verified else yf_next_report, verified=verified)
+    try:
+        history = json.loads((results / "index.json").read_text("utf-8")).get("weeks", [])
+    except Exception:
+        history = []
+    plan = build_plan(portfolio, ref, week, max_swarms=max_swarms, plan_kind=plan_kind,
+                      force_risk=args.force_risk, reports=reports, history=history,
+                      by_date=(args.event == "schedule"))
     con.say("Plan: " + ", ".join(PRESET_LABELS.get(s["preset"], s["preset"]) for s in plan))
 
     vt_version = "?"
+    shellfree: list[str] = []
     with quiet_fds(log_path):
         try:
             runtime, store, vt_version = make_runtime(args.dry_run)
+            if not args.dry_run:
+                shellfree = prepare_shellfree_presets(Path.home() / ".vibe-trading" / "swarm" / "presets",
+                                                      brief=dtj.agent_brief(datacheck),
+                                                      eodhd_ready=bool(eodhd_info.get("tool") and eodhd_info.get("key")))
         except Exception as exc:
             errors.append({"stage": "init", "type": type(exc).__name__, "message": str(exc)[:2000],
                            "trace": traceback.format_exc()[-4000:]})
             runtime = store = None
-
+    if shellfree:
+        con.say(f"Kvant-værktøjer i stedet for shell i {len(shellfree)} presets")
     if runtime is None:
         con.say(f"FEJL ved opstart af Vibe-Trading ({errors[-1]['type']}). Detaljer ligger krypteret i rapporten.")
 
-    used_tokens = 0
+    used_usd = 0.0
     for step in plan if runtime else []:
         label = PRESET_LABELS.get(step["preset"], step["preset"])
-        if used_tokens >= token_budget:
+        left = budget - used_usd
+        reserve = 0.0 if step.get("cio") else cio_reserve
+        if left < reserve + min_swarm:
+            why = ("Budget for denne kørsel brugt" if budget < run_budget or used_usd else "Månedsbudget brugt")
             runs.append({"preset": step["preset"], "label": label, "reason": step["reason"], "status": "skipped",
-                         "skip_reason": f"Tokenbudget nået ({used_tokens:,} af {token_budget:,})".replace(",", " "),
+                         "skip_reason": f"{why} ({used_usd:.2f} af {budget:.2f} USD; {cio_reserve:.0f} USD holdes til CIO'en)",
                          "tasks": [], "tokens_in": 0, "tokens_out": 0, "est_cost_usd": 0})
-            con.say(f"· {label}: sprunget over (tokenbudget)")
+            con.say(f"· {label}: sprunget over (budget)")
             continue
+        if step.get("cio"):
+            step["vars"]["goal"] = cio_goal_with_inputs(step["vars"]["goal"] + dtj.cio_instruction(datacheck), runs)
         started, m0 = dt.datetime.now(STO), time.monotonic()
         con.say(f"· {label}: starter")
         with quiet_fds(log_path):
@@ -620,15 +1005,17 @@ def main(argv: list[str] | None = None) -> int:
                              "tokens_in": 0, "tokens_out": 0, "est_cost_usd": 0,
                              "duration_s": round(time.monotonic() - m0)})
         r = runs[-1]
-        used_tokens += r.get("tokens_in", 0) + r.get("tokens_out", 0)
-        con.say(f"· {label}: {r['status']} · {r.get('duration_s', 0)} s · {r.get('tokens_in', 0) + r.get('tokens_out', 0):,} tokens".replace(",", " "))
+        used_usd += float(r.get("est_cost_usd") or 0)
+        con.say(f"· {label}: {r['status']} · {r.get('duration_s', 0)} s · {r.get('tokens_in', 0) + r.get('tokens_out', 0):,} tokens · {r.get('est_cost_usd', 0):.2f} USD".replace(",", " "))
 
+    silence_rest(log_path)  # herfra når intet fra Vibe-Tradings tråde GitHub-loggen
     done = [r for r in runs if r["status"] == "completed"]
-    status = "ok" if runs and len(done) == len(runs) else "partial" if done else "failed"
+    started_runs = [r for r in runs if r["status"] != "skipped"]
+    status = "ok" if started_runs and len(done) == len(started_runs) else "partial" if done else "failed"
     tin = sum(r.get("tokens_in", 0) for r in runs)
     tout = sum(r.get("tokens_out", 0) for r in runs)
     generated = dt.datetime.now(STO).isoformat(timespec="seconds")
-    log_tail = log_path.read_text("utf-8", "replace")[-6000:] if log_path.exists() else ""
+    log_tail = eo.redact(log_path.read_text("utf-8", "replace")[-6000:]) if log_path.exists() else ""
 
     payload = {
         "schema": SCHEMA, "generated_at": generated, "week": week, "status": status,
@@ -639,23 +1026,36 @@ def main(argv: list[str] | None = None) -> int:
                       "holdings": portfolio["holdings"], "cash_sek": portfolio["cash_sek"],
                       "weights_cost": cost_weights(portfolio)},
         "upcoming_reports": reports, "plan": [{"preset": s["preset"], "reason": s["reason"]} for s in plan],
+        "datacheck": datacheck, "eodhd": eodhd_info,
         "runs": runs,
         "totals": {"tokens_in": tin, "tokens_out": tout, "duration_s": round(time.monotonic() - t0),
                    "est_cost_usd": round(sum(r.get("est_cost_usd", 0) for r in runs), 2),
-                   "price_basis": f"{price_in:g}/{price_out:g} USD pr. mio. tokens (ind/ud) – estimat"},
+                   "price_basis": f"{price_in:g}/{price_out:g} USD pr. mio. tokens (ind/ud) – estimat",
+                   "budget_usd": round(budget, 2), "month_spent_before_usd": spent_before,
+                   "month_budget_usd": month_budget, "plan_kind": plan_kind, "shellfree_presets": shellfree},
         "errors": errors, "log_tail": log_tail,
         "github": {"repo": os.environ.get("GITHUB_REPOSITORY"), "run_id": os.environ.get("GITHUB_RUN_ID"),
                    "server": os.environ.get("GITHUB_SERVER_URL", "https://github.com")},
     }
-    public = {"week_id": week["id"], "week_label": week["label"], "generated_at": generated, "status": status,
+    run_id = (f"{week['id']}_{dt.datetime.fromisoformat(generated):%Y%m%d-%H%M}_"
+              f"{os.environ.get('GITHUB_RUN_ID') or secrets.token_hex(3)}")
+    public = {"run_id": run_id, "week_id": week["id"], "week_label": week["label"], "generated_at": generated, "status": status,
               "runs": len(runs), "completed": len(done), "dry_run": args.dry_run,
-              "presets": [r["preset"] for r in done]}
-    envelope = fit_payload(payload, passphrase, public, iterations)
-    assert decrypt(envelope, passphrase)["week"]["id"] == week["id"], "kryptering kunne ikke verificeres"
-    write_results(results, envelope)
+              "presets": [r["preset"] for r in done], "week_to": week["to"],
+              "cost_usd": round(sum(r.get("est_cost_usd", 0) for r in runs), 2),
+              "datacheck": datacheck["status"] if datacheck else "ikke kørt"}
+    try:
+        envelope = fit_payload(payload, passphrase, public, iterations)
+        assert decrypt(envelope, passphrase)["week"]["id"] == week["id"], "kryptering kunne ikke verificeres"
+        write_results(results, envelope)
+    except Exception as exc:  # noqa: BLE001 - traceback går til den private log, ikke til GitHub
+        traceback.print_exc()
+        con.say(f"FEJL: resultatet kunne ikke krypteres eller skrives ({type(exc).__name__}).")
+        set_output(ran="false", status="error", week=week["id"])
+        return 3
     kb = len(json.dumps(envelope)) / 1024
     con.say(f"Resultat: {status} · {len(done)}/{len(runs)} swarms · {tin + tout:,} tokens · {kb:.0f} KB krypteret".replace(",", " "))
-    set_output(ran="true", status=status, week=week["id"])
+    set_output(ran="true", status=status, week=week["id"], run_id=run_id)
     return 0
 
 

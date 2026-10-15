@@ -34,14 +34,24 @@ def sto(s: str) -> dt.datetime:
 
 
 # --- uge og tidsvagt -------------------------------------------------------
-def test_week_window_saturday():
+def test_week_window_saturday_is_full_current_week():
     w = rw.week_window(sto("2026-10-17T08:00"))
-    assert w == {"id": "2026-W42", "from": "2026-10-12", "to": "2026-10-16", "label": "Uge 42 · 12/10/2026–16/10/2026"}
+    assert w == {"id": "2026-W42", "from": "2026-10-12", "to": "2026-10-16", "full": True,
+                 "label": "Uge 42 · 12/10/2026–16/10/2026"}
 
 
-def test_week_window_midweek_points_to_last_full_week():
-    assert rw.week_window(sto("2026-10-14T12:00"))["id"] == "2026-W41"
-    assert rw.week_window(sto("2026-10-16T15:00"))["id"] == "2026-W41"  # fredag før lukning
+@pytest.mark.parametrize("when,week,to,full", [
+    ("2026-10-15T11:34", "2026-W42", "2026-10-14", False),  # torsdag formiddag: til og med onsdagens lukning
+    ("2026-10-15T22:30", "2026-W42", "2026-10-15", False),  # torsdag efter NYSE-lukning
+    ("2026-10-16T15:00", "2026-W42", "2026-10-15", False),  # fredag før lukning
+    ("2026-10-18T20:00", "2026-W42", "2026-10-16", True),   # søndag
+    ("2026-10-12T10:00", "2026-W41", "2026-10-09", True),   # mandag før første lukning -> forrige uge
+    ("2026-10-12T23:00", "2026-W42", "2026-10-12", False),  # mandag efter lukning
+])
+def test_week_window_follows_calendar(when, week, to, full):
+    w = rw.week_window(sto(when))
+    assert (w["id"], w["to"], w["full"]) == (week, to, full)
+    assert ("ugen til dato" in w["label"]) is (not full)
 
 
 @pytest.mark.parametrize("utc,expect", [
@@ -51,15 +61,28 @@ def test_week_window_midweek_points_to_last_full_week():
     ("2026-10-17T05:59", False),
     ("2026-10-16T06:00", False),   # fredag
 ])
-def test_should_run_handles_dst(utc, expect):
+def test_should_run_handles_dst(utc, expect, monkeypatch):
+    monkeypatch.setenv("VT_SCHEDULE", "on")
     ref = dt.datetime.fromisoformat(utc).replace(tzinfo=UTC).astimezone(rw.STO)
     assert rw.should_run(ref, None, "schedule", False)[0] is expect
 
 
-def test_should_run_skips_done_week_but_retries_failed():
+def test_schedule_is_off_by_default_but_button_always_runs(monkeypatch):
+    monkeypatch.delenv("VT_SCHEDULE", raising=False)
+    ok, why = rw.should_run(sto("2026-10-17T08:05"), None, "schedule", False)
+    assert ok is False and "VT_SCHEDULE" in why
+    assert rw.should_run(sto("2026-10-14T10:00"), None, "workflow_dispatch", False)[0] is True
+
+
+def test_should_run_skips_done_week_but_retries_failed(monkeypatch):
+    monkeypatch.setenv("VT_SCHEDULE", "on")
     ref = sto("2026-10-17T09:30")
-    assert rw.should_run(ref, {"week_id": "2026-W42", "status": "ok"}, "schedule", False)[0] is False
-    assert rw.should_run(ref, {"week_id": "2026-W42", "status": "partial"}, "schedule", False)[0] is False
+    full = {"week_id": "2026-W42", "week_to": "2026-10-16"}
+    assert rw.should_run(ref, {**full, "status": "ok"}, "schedule", False)[0] is False
+    assert rw.should_run(ref, {**full, "status": "partial"}, "schedule", False)[0] is False
+    # en manuel kørsel midt i ugen (til og med onsdag) må ikke blokere lørdagens fulde uge
+    assert rw.should_run(ref, {**full, "status": "ok", "week_to": "2026-10-14"}, "schedule", False)[0] is True
+    assert rw.should_run(ref, {**full, "status": "ok", "dry_run": True}, "schedule", False)[0] is True
     assert rw.should_run(ref, {"week_id": "2026-W42", "status": "failed"}, "schedule", False)[0] is True
     assert rw.should_run(ref, {"week_id": "2026-W41", "status": "ok"}, "schedule", False)[0] is True
     assert rw.should_run(sto("2026-10-14T10:00"), None, "workflow_dispatch", False)[0] is True
@@ -88,26 +111,68 @@ def test_portfolio_text_and_weights():
 
 
 # --- plan ------------------------------------------------------------------
-def test_plan_weekly_only_mid_month():
-    p = rw.load_portfolio(json.dumps(PORTFOLIO))
-    ref = sto("2026-10-17T08:00")
-    plan = rw.build_plan(p, ref, rw.week_window(ref), reports=[])
-    assert [s["preset"] for s in plan] == ["portfolio_review_board"]
-    v = plan[0]["vars"]
-    assert set(v) == {"portfolio", "review_period", "goal"} and "dansk" in v["goal"]
-    assert "12/10/2026–16/10/2026" in v["review_period"]
+def presets(plan):
+    return [s["preset"] for s in plan]
 
 
-def test_plan_first_saturday_and_earnings():
-    p = rw.load_portfolio(json.dumps(PORTFOLIO))
-    ref = sto("2026-10-03T08:00")
-    reps = rw.upcoming_reports(p, sto("2026-10-17T08:00"), lookup=None)
-    assert reps == [{"ticker": "QQQX.US", "name": "Hemmelig Soeg", "date": "2026-10-28", "source": "portefølje"}]
+def test_plan_full_week_with_watchlist():
+    p = rw.load_portfolio(json.dumps({**PORTFOLIO, "watchlist": [{"ticker": "NOVA-B.CO", "note": "limit"}]}))
+    ref = sto("2026-10-17T08:00")  # 3. lørdag (fondsvalg), uge 42 -> rotation 0 (investeringskomité)
+    reps = rw.upcoming_reports(p, ref, lookup=None)
     plan = rw.build_plan(p, ref, rw.week_window(ref), reports=reps)
-    assert [s["preset"] for s in plan] == ["portfolio_review_board", "risk_committee", "earnings_research_desk"]
-    assert "Hemmelig Raket" in plan[1]["vars"]["goal"]  # største position stresstestes
-    assert plan[2]["vars"]["target"].startswith("QQQX.US ")
-    assert len(rw.build_plan(p, ref, rw.week_window(ref), reports=reps, max_swarms=2)) == 2
+    assert presets(plan) == ["risk_committee", "earnings_research_desk", "fund_selection_panel",
+                             "investment_committee", "portfolio_review_board"]
+    assert plan[-1].get("cio") and "12/10/2026–16/10/2026" in plan[-1]["vars"]["review_period"]
+    assert "Uge 42" in plan[-1]["vars"]["review_period"]
+    assert plan[3]["vars"]["target"] == "NOVA-B.CO" and plan[3]["vars"]["market"].startswith("Danmark")
+    assert "Hemmelig Raket" in plan[0]["vars"]["goal"] and "portfolio_risk_xray" in plan[0]["vars"]["goal"]
+
+
+def test_plan_first_saturday_odd_week_and_core():
+    p = rw.load_portfolio(json.dumps(PORTFOLIO))
+    ref = sto("2026-11-07T08:00")  # 1. lørdag (ETF), uge 45 -> rotation 0 uden overvågningsliste = fundamental analyse
+    plan = rw.build_plan(p, ref, rw.week_window(ref), reports=[])
+    assert presets(plan) == ["risk_committee", "etf_allocation_desk", "fundamental_research_team", "portfolio_review_board"]
+    assert plan[2]["vars"]["target"] in ("ZZTOP.US", "QQQX.US")
+    assert presets(rw.build_plan(p, ref, rw.week_window(ref), plan_kind="kerne")) == ["risk_committee", "portfolio_review_board"]
+    capped = rw.build_plan(p, ref, rw.week_window(ref), max_swarms=2)
+    assert presets(capped) == ["risk_committee", "portfolio_review_board"]  # CIO bevares altid
+
+
+def test_cio_gets_other_teams_conclusions():
+    runs = [{"preset": "risk_committee", "label": "Risikoudvalg", "status": "completed", "final_report": "VaR 95 % = 4,1 %"},
+            {"preset": "x", "label": "Fejlet", "status": "error", "final_report": None}]
+    g = rw.cio_goal_with_inputs("Mål.", runs)
+    assert g.startswith("Mål.") and "### Risikoudvalg" in g and "VaR 95 % = 4,1 %" in g and "Fejlet" not in g
+    assert rw.cio_goal_with_inputs("Mål.", []) == "Mål."
+
+
+def test_shellfree_presets_swap_bash_for_quant_tools(tmp_path):
+    import yaml
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "risk_committee.yaml").write_text(yaml.safe_dump({"name": "risk_committee", "agents": [
+        {"id": "a", "system_prompt": "Analyse.", "tools": ["bash", "read_file", "get_market_data"]},
+        {"id": "b", "system_prompt": "Samler.", "tools": ["read_file"]}]}))
+    (src / "plain.yaml").write_text(yaml.safe_dump({"name": "plain", "agents": [{"id": "c", "system_prompt": "x", "tools": ["web_search"]}]}))
+    changed = rw.prepare_shellfree_presets(tmp_path / "dst", src)
+    assert changed == ["plain", "risk_committee"]  # plain får kun research-discipline på sidste agent
+    spec = yaml.safe_load((tmp_path / "dst" / "risk_committee.yaml").read_text())
+    a, b = spec["agents"]
+    assert "bash" not in a["tools"] and {"quantlib_call", "portfolio_risk_xray"} <= set(a["tools"])
+    assert a["tools"].count("get_market_data") == 1 and "Shell access is DISABLED" in a["system_prompt"]
+    assert "Shell access" not in b["system_prompt"] and "bash" not in b["tools"]
+    assert b["tools"] == ["read_file", "load_skill"] and "research-discipline" in b["skills"]
+
+
+def test_month_spent_reads_ledger(tmp_path):
+    (tmp_path / "ledger.json").write_text(json.dumps({"runs": [
+        {"generated_at": "2026-10-15T12:23:38+02:00", "cost_usd": 10.0},
+        {"generated_at": "2026-10-17T09:00:00+02:00", "cost_usd": 20.5},
+        {"generated_at": "2026-10-17T09:00:00+02:00", "cost_usd": 99, "dry_run": True},
+        {"generated_at": "2026-09-26T09:00:00+02:00", "cost_usd": 50}]}))
+    assert rw.month_spent(tmp_path, sto("2026-10-24T08:00")) == 30.5
+    assert rw.month_spent(tmp_path / "nope", sto("2026-10-24T08:00")) == 0.0
 
 
 def test_upcoming_reports_horizon_and_lookup_fallback():
@@ -150,7 +215,7 @@ def test_summarize_run_costs_and_roles():
     run = rt.start_run("portfolio_review_board", {"portfolio": "p"})
     s = rw.summarize_run(run, "portfolio_review_board", "r", rw.now_sto(), 12.4, price_in=3, price_out=15)
     assert s["est_cost_usd"] == pytest.approx(1200 / 1e6 * 3 + 300 / 1e6 * 15, abs=0.01)
-    assert s["tasks"][0]["role"] == "Analytiker 1" and s["label"] == "Porteføljegennemgang"
+    assert s["tasks"][0]["role"] == "Analytiker 1" and s["label"] == "Porteføljegennemgang (CIO)"
 
 
 # --- kryptering ------------------------------------------------------------
@@ -189,8 +254,9 @@ def test_browser_webcrypto_can_decrypt(tmp_path):
 
 # --- ende-til-ende (tørkørsel som subprocess, så GitHub-loggen kan inspiceres) --
 def run_main(tmp_path, *extra, **env_over):
-    env = {**os.environ, "VT_PORTFOLIO": json.dumps(PORTFOLIO), "VT_RESULTS_PASSPHRASE": PASS,
-           "VT_PBKDF2_ITER": "1000", "GITHUB_OUTPUT": str(tmp_path / "out.txt"), **env_over}
+    env = {**os.environ, "VT_PORTFOLIO": json.dumps(PORTFOLIO), "VT_RESULTS_PASSPHRASE": PASS, "VT_SCHEDULE": "on",
+           "VT_PBKDF2_ITER": "1000", "GITHUB_OUTPUT": str(tmp_path / "out.txt"), "EODHD_API_KEY": "",
+           "EODHD_API_TOKEN": "", "VT_DATATJEK_VT": "off", **env_over}
     env.pop("ANTHROPIC_API_KEY", None)
     return subprocess.run([sys.executable, str(ROOT / "runner" / "run_week.py"), "--results", str(tmp_path / "results"),
                            "--dry-run", *extra], capture_output=True, text=True, env=env, timeout=120)
@@ -201,39 +267,53 @@ def outputs(tmp_path):
 
 
 def test_end_to_end_dry_run_first_saturday(tmp_path):
-    p = run_main(tmp_path, "--event", "schedule", "--now", "2026-10-03T08:01")
+    p = run_main(tmp_path, "--event", "schedule", "--now", "2026-10-03T08:01")  # uge 40 (lige), første lørdag
     assert p.returncode == 0, p.stderr
     log = p.stdout + p.stderr
     for secret in ("ZZTOP", "QQQX", "Hemmelig", "21480", "21 480", "reserveret"):
         assert secret not in log, f"{secret!r} lækket til loggen"
     o = outputs(tmp_path)
-    assert o == {"ran": "true", "status": "ok", "week": "2026-W40"}
+    assert {k: o[k] for k in ("ran", "status", "week")} == {"ran": "true", "status": "ok", "week": "2026-W40"}
+    assert o["run_id"].startswith("2026-W40_")
     res = tmp_path / "results"
     env = json.loads((res / "latest.enc.json").read_text())
-    assert (res / "weeks" / "2026-W40.enc.json").exists()
-    assert json.loads((res / "index.json").read_text())["latest"] == "2026-W40"
+    assert (res / "weeks" / f"{o['run_id']}.enc.json").exists() and env["public"]["run_id"] == o["run_id"]
+    assert json.loads((res / "index.json").read_text())["latest"] == o["run_id"]
     for f in res.rglob("*.json"):
         assert "Hemmelig" not in f.read_text() and "ZZTOP" not in f.read_text()
     data = rw.decrypt(env, PASS)
-    assert [r["preset"] for r in data["runs"]] == ["portfolio_review_board", "risk_committee"]
+    assert [r["preset"] for r in data["runs"]] == ["risk_committee", "etf_allocation_desk",
+                                                   "sentiment_intelligence_team", "portfolio_review_board"]
     assert data["status"] == "ok" and data["portfolio"]["holdings"][0]["name"] == "Hemmelig Raket"
-    assert env["public"]["status"] == "ok" and env["public"]["completed"] == 2
+    assert env["public"]["status"] == "ok" and env["public"]["completed"] == 4
+    assert env["public"]["week_to"] == "2026-10-02" and env["public"]["cost_usd"] > 0
+    assert json.loads((res / "ledger.json").read_text())["runs"][0]["week_id"] == "2026-W40"
 
 
 def test_end_to_end_skip_then_partial(tmp_path):
+    # en tørkørsel blokerer ikke lørdagen, men en rigtig kørsel for hele ugen gør
     assert run_main(tmp_path, "--event", "schedule", "--now", "2026-10-17T08:05").returncode == 0
     p = run_main(tmp_path, "--event", "schedule", "--now", "2026-10-17T09:35")
+    assert outputs(tmp_path)["ran"] == "true"
+    led = tmp_path / "results" / "latest.enc.json"
+    env = json.loads(led.read_text())
+    env["public"]["dry_run"] = False
+    led.write_text(json.dumps(env))
+    p = run_main(tmp_path, "--event", "schedule", "--now", "2026-10-17T09:40")
     assert "allerede kørt" in p.stdout and outputs(tmp_path)["ran"] == "false"
     p = run_main(tmp_path, "--event", "workflow_dispatch", "--now", "2026-10-17T10:00", "--force-risk",
                  VT_DRY_FAIL="risk_committee")
     assert outputs(tmp_path)["status"] == "partial"
     idx = json.loads((tmp_path / "results" / "index.json").read_text())
-    assert len(idx["weeks"]) == 1 and idx["weeks"][0]["status"] == "partial"
+    # hver kørsel gemmes for sig (knaptryk flere gange om ugen overskriver ikke hinanden)
+    assert len(idx["weeks"]) >= 2 and idx["weeks"][0]["status"] == "partial"
+    assert len({w["run_id"] for w in idx["weeks"]}) == len(idx["weeks"])
 
 
 def test_gate_only_needs_no_secrets(tmp_path):
     env = {k: v for k, v in os.environ.items() if not k.startswith(("VT_", "ANTHROPIC"))}
     env["GITHUB_OUTPUT"] = str(tmp_path / "out.txt")
+    env["VT_SCHEDULE"] = "on"
     p = subprocess.run([sys.executable, str(ROOT / "runner" / "run_week.py"), "--results", str(tmp_path / "r"),
                         "--gate-only", "--event", "schedule", "--now", "2026-10-17T08:00"],
                        capture_output=True, text=True, env=env)
@@ -245,3 +325,154 @@ def test_missing_secrets_fail_clearly(tmp_path):
     assert p.returncode == 2 and "VT_RESULTS_PASSPHRASE" in p.stdout
     p = run_main(tmp_path, "--event", "workflow_dispatch", VT_PORTFOLIO="{ikke json")
     assert p.returncode == 2 and "ikke gyldig JSON" in p.stdout and "ikke json" not in p.stdout
+
+
+def test_skip_presets_and_force_risk(monkeypatch):
+    p = rw.load_portfolio(json.dumps(PORTFOLIO))
+    ref = sto("2026-10-17T08:00")
+    reps = rw.upcoming_reports(p, ref, lookup=None)
+    monkeypatch.setenv("VT_SKIP_PRESETS", "risk_committee,fundamental_research_team")
+    assert presets(rw.build_plan(p, ref, rw.week_window(ref), reports=reps)) == [
+        "earnings_research_desk", "fund_selection_panel", "portfolio_review_board"]
+    assert "risk_committee" in presets(rw.build_plan(p, ref, rw.week_window(ref), reports=reps, force_risk=True))
+    monkeypatch.setenv("VT_SKIP_PRESETS", "portfolio_review_board,risk_committee,earnings_research_desk,fund_selection_panel,fundamental_research_team")
+    assert presets(rw.build_plan(p, ref, rw.week_window(ref), reports=reps)) == ["portfolio_review_board"]  # CIO kan ikke slås fra
+
+
+def test_budget_skips_extras_but_keeps_cio(tmp_path):
+    p = run_main(tmp_path, "--event", "workflow_dispatch", "--now", "2026-10-17T08:05",
+                 VT_RUN_BUDGET_USD="0.012", VT_CIO_RESERVE_USD="0.005", VT_MIN_SWARM_USD="0.001")
+    assert p.returncode == 0, p.stderr
+    data = rw.decrypt(json.loads((tmp_path / "results" / "latest.enc.json").read_text()), PASS)
+    st = {r["preset"]: r["status"] for r in data["runs"]}
+    assert st["portfolio_review_board"] == "completed" and "skipped" in st.values()
+    assert data["status"] == "ok"  # budget-spring er ikke en fejl
+
+
+@pytest.mark.parametrize("day,preset", [("2026-10-03", "etf_allocation_desk"), ("2026-10-10", "macro_rates_fx_desk"),
+                                        ("2026-10-17", "fund_selection_panel"), ("2026-10-24", "value_investing_committee"),
+                                        ("2026-10-31", "equity_research_team")])
+def test_monthly_slot_by_saturday(day, preset):
+    p = rw.load_portfolio(json.dumps(PORTFOLIO))
+    ref = sto(day + "T08:00")
+    assert preset in presets(rw.build_plan(p, ref, rw.week_window(ref), reports=[]))
+
+
+def test_button_runs_rotate_to_least_recent_team(monkeypatch):
+    p = rw.load_portfolio(json.dumps({**PORTFOLIO, "watchlist": [{"ticker": "NOVA-B.CO"}]}))
+    ref = sto("2026-10-15T11:34")
+    hist = [{"generated_at": "2026-10-10T09:00:00+02:00", "presets": ["etf_allocation_desk", "investment_committee"]},
+            {"generated_at": "2026-10-12T09:00:00+02:00", "presets": ["macro_rates_fx_desk", "sentiment_intelligence_team"]},
+            {"generated_at": "2026-10-13T09:00:00+02:00", "presets": ["fund_selection_panel"], "dry_run": True}]
+    names = presets(rw.build_plan(p, ref, rw.week_window(ref), reports=[], history=hist, by_date=False))
+    # fondsvalg kørte kun som tørkørsel -> tæller ikke; aldrig-kørte teams vælges først i fast rækkefølge
+    assert "fund_selection_panel" in names and "technical_analysis_panel" in names
+    monkeypatch.setenv("VT_MONTHLY_SLOT", "2")
+    assert "macro_rates_fx_desk" in presets(rw.build_plan(p, ref, rw.week_window(ref), reports=[], history=hist, by_date=False))
+
+
+def test_extra_skills_are_added_with_load_skill(tmp_path):
+    import yaml
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "portfolio_review_board.yaml").write_text(yaml.safe_dump({"name": "portfolio_review_board", "agents": [
+        {"id": "risk_inspector", "system_prompt": "x", "tools": ["read_file"], "skills": ["risk-analysis"]},
+        {"id": "chief_investment_officer", "system_prompt": "y", "tools": ["read_file"], "skills": ["asset-allocation"]}]}))
+    assert rw.prepare_shellfree_presets(tmp_path / "dst", src) == ["portfolio_review_board"]
+    a, cio = yaml.safe_load((tmp_path / "dst" / "portfolio_review_board.yaml").read_text())["agents"]
+    assert a["skills"] == ["risk-analysis"] and "load_skill" not in a["tools"]
+    assert cio["skills"][:1] == ["asset-allocation"] and {"thesis-tracker", "investor-lenses", "research-discipline"} <= set(cio["skills"])
+    assert cio["skills"].count("research-discipline") == 1 and "load_skill" in cio["tools"]
+    assert {"report_audit", "financial_rigor", "get_market_data"} <= set(cio["tools"]) and "Faktatjek: PASS" in cio["system_prompt"]
+    assert "report_audit" not in a["tools"]
+
+
+def test_spacex_gets_private_company_framework():
+    p = rw.load_portfolio(json.dumps({"holdings": [{"ticker": "SPCX.US", "name": "SpaceX", "cost_sek": 21480}],
+                                      "next_reports": {"SPCX.US": "2026-11-03"}}))
+    ref = sto("2026-10-24T08:00")  # 4. lørdag -> værdikomité på SpaceX + regnskabsdesk
+    plan = rw.build_plan(p, ref, rw.week_window(ref), reports=rw.upcoming_reports(p, ref, lookup=None))
+    by = {s["preset"]: s for s in plan}
+    assert "private-company-research" in by["earnings_research_desk"]["vars"]["target"]
+    assert "private-company-research" in by["value_investing_committee"]["vars"]["market"]
+    assert "private-company-research" in rw.EXTRA_SKILLS["portfolio_review_board"]["chief_investment_officer"]
+
+
+# --- EODHD og datatjek ------------------------------------------------------
+def test_presets_get_eodhd_tool_guidance_and_brief(tmp_path, monkeypatch):
+    import yaml
+    monkeypatch.setenv("EODHD_API_KEY", "k" * 20)
+    monkeypatch.setenv("FRED_API_KEY", "f" * 20)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "macro_rates_fx_desk.yaml").write_text(yaml.safe_dump({"name": "macro_rates_fx_desk", "agents": [
+        {"id": "rates", "system_prompt": "Renter.", "tools": ["bash", "get_market_data"]},
+        {"id": "lead", "system_prompt": "Samler.", "tools": ["read_file"]}]}))
+    (src / "portfolio_review_board.yaml").write_text(yaml.safe_dump({"name": "portfolio_review_board", "agents": [
+        {"id": "chief_investment_officer", "system_prompt": "CIO.", "tools": ["read_file"]}]}))
+    brief = "## Vibetrad datatjek 15/10/2026: PASS\n| a | b |"
+    rw.prepare_shellfree_presets(tmp_path / "dst", src, brief=brief)
+    rates, lead = yaml.safe_load((tmp_path / "dst" / "macro_rates_fx_desk.yaml").read_text())["agents"]
+    assert {"get_eodhd_data", "get_macro_series"} <= set(rates["tools"]) and "SE10Y.GBOND" in rates["system_prompt"]
+    assert "get_macro_series" in lead["tools"] and "get_eodhd_data" in lead["tools"]  # hele desken
+    assert rates["system_prompt"].rstrip().endswith("| a | b |") and "Vibetrad datatjek" in lead["system_prompt"]
+    (cio,) = yaml.safe_load((tmp_path / "dst" / "portfolio_review_board.yaml").read_text())["agents"]
+    assert {"get_eodhd_data", "etf_holdings", "report_audit"} <= set(cio["tools"]) and "Datakvalitet" in cio["system_prompt"]
+    assert len(cio["tools"]) == len(set(cio["tools"]))
+
+
+def test_upcoming_reports_prefers_verified_dates():
+    p = rw.load_portfolio(json.dumps(PORTFOLIO))  # porteføljen siger QQQX 28/10
+    got = rw.upcoming_reports(p, sto("2026-10-20T08:00"), lookup=None,
+                              verified={"QQQX.US": "2026-10-29", "ZZTOP.US": "2026-11-20"})
+    assert got == [{"ticker": "QQQX.US", "name": "Hemmelig Soeg", "date": "2026-10-29", "source": "datatjek"}]
+
+
+def test_dry_run_has_datacheck_and_eodhd_key_never_leaks(tmp_path):
+    key = "eodhd-NOEGLE-0123456789"
+    p = run_main(tmp_path, "--event", "workflow_dispatch", "--now", "2026-10-15T12:00",
+                 EODHD_API_KEY=key, EODHD_BASE_URL="http://127.0.0.1:9", EODHD_RETRIES="0")
+    assert p.returncode == 0, p.stderr
+    log = p.stdout + p.stderr
+    assert "Datatjek: " in log and key not in log
+    for secret in ("ZZTOP", "QQQX", "Hemmelig"):
+        assert secret not in log
+    env = json.loads((tmp_path / "results" / "latest.enc.json").read_text())
+    assert env["public"]["datacheck"] in ("PASS", "ADVARSEL", "FEJL")
+    data = rw.decrypt(env, PASS)
+    dc = data["datacheck"]
+    assert dc["sources"]["eodhd"]["available"] is True and dc["sources"]["eodhd"]["errors"]
+    assert key not in json.dumps(data) and key not in (tmp_path / "results" / "index.json").read_text()
+    assert data["eodhd"]["key"] is True
+    p2 = run_main(tmp_path / "b", "--event", "workflow_dispatch", "--now", "2026-10-15T12:00", VT_DATATJEK="off")
+    env2 = json.loads((tmp_path / "b" / "results" / "latest.enc.json").read_text())
+    assert p2.returncode == 0 and env2["public"]["datacheck"] == "ikke kørt"
+
+
+def test_key_gated_tools_are_left_out_without_keys(tmp_path, monkeypatch):
+    import yaml
+    for k in ("EODHD_API_KEY", "EODHD_API_TOKEN", "FRED_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "macro_rates_fx_desk.yaml").write_text(yaml.safe_dump({"name": "macro_rates_fx_desk", "agents": [
+        {"id": "rates", "system_prompt": "Renter.", "tools": ["get_market_data"]}]}))
+    rw.prepare_shellfree_presets(tmp_path / "dst", src)
+    (a,) = yaml.safe_load((tmp_path / "dst" / "macro_rates_fx_desk.yaml").read_text())["agents"]
+    assert "get_eodhd_data" not in a["tools"] and "get_macro_series" not in a["tools"]
+    assert "Data sources (Vibetrad)" not in a["system_prompt"]
+
+
+def test_eodhd_tool_is_not_promised_when_install_failed(tmp_path, monkeypatch):
+    import yaml
+    monkeypatch.setenv("EODHD_API_KEY", "k" * 20)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "risk_committee.yaml").write_text(yaml.safe_dump({"name": "risk_committee", "agents": [
+        {"id": "a", "system_prompt": "x", "tools": ["get_market_data"]}]}))
+    rw.prepare_shellfree_presets(tmp_path / "dst", src, eodhd_ready=False)
+    (a,) = yaml.safe_load((tmp_path / "dst" / "risk_committee.yaml").read_text())["agents"]
+    assert "get_eodhd_data" not in a["tools"] and "Data sources (Vibetrad)" not in a["system_prompt"]
+    rw.prepare_shellfree_presets(tmp_path / "dst2", src, eodhd_ready=True)
+    (a,) = yaml.safe_load((tmp_path / "dst2" / "risk_committee.yaml").read_text())["agents"]
+    assert "get_eodhd_data" in a["tools"]
