@@ -1,0 +1,24 @@
+{
+ "schema": 1,
+ "alg": "AES-256-GCM",
+ "kdf": "PBKDF2-SHA256",
+ "iter": 600000,
+ "zip": "gzip",
+ "salt": "yg+HrmNhdxF1GK46OSIQLA==",
+ "iv": "SaK4stOlainAhvS1",
+ "ct": "0EZH8rM06eW2lnW5e2cS1EXdXz8ANw3ufo4Fh5ZiSaEkDlbwlzW4qEMYgF9O1vkfJTI500odh55f8w2qcyM5ecB6jswo1KWDelfqtVrxFNDkjcbBnE3XIers+lkrt8vZfx9tZhWt9jRuNSEv+NaGzOJX6m4jMKC4Wq6EMcQp+S+GJIaQHpRZptYwDhPLhJTW0fD6HEPgEV1RffXkqSYIXQA2jJH1YC6mDoS0ZXW8bWgzmEc51c1HEDpPebmv0t/fn0HWSZJQ15z9kc8BJSWqRuYBp/X/hkVOX6Dn0qLgvYW6AAVXfmPWlAEkL0ECVyrPGI11EhffxKvpNU6y5HsDxMIqvLsTOerGjivBQaqQyqejDrwiLihhZze7VdndoIzJwdgO4KNrLh4wRlAn8pNqLZElcFRbs6YgtmTaBX/f5yEwZWplieppWhoRxswJ+HnYrB6PRU6PL+o/QRjNjSjqHH5Q0NlqPQefn+f2P2GWpLAhpBy7Nh2rTdeOjpZDMd67+784Z1V8lLMppuWePqrBczb2eaDw+7x+LAnFrbLjdP7YnDL6R01bfDTeV84owNU2xW2lGMROz3H9a6sC2jj0srhpkVQh5a9k2WL+1YaWjG6pcTShUWDuQV+EvEz7Qhy0WiFENGAoGiTp+gDWDtb7sbaLMJn9RdXBCYACkAGaJFVSCTycgOQlpgHierQExUTCdcRDWPxrA6ykICg3jt5UQsthM+/HCeFFhuXyLkkFzX00lCxTZAZ9YbmlFDwUtnKbRnLdvieFDrgi8YzjBafDgkh3VVCE+82nHGbhf9nCJ5E0g8UgbjXm48b5Hqvc3/Qc3tyGaY0PKgHgkZT4ssQrKIjeX7HNq4ldG5N5P+NQisuSuXqYRg3l8omquzMLaLnt0je6ZYP3GMo/Zf0I3qMeJrRY0193JExc7/jI2ZGaWA4SaFl7E5+0EpG/+ZW3GgaD2rWMYfJlU4hDqN3SOQyV7GYVt81gtv0a7sBCYJIKqEjyk9oTClbK4m9i3nniJU7IGRmbOeptM4Kcpreya90giziCGYMeI7u/0rizmvlMWGTosvl71oyyKb2wgF/nC0xlqdB9j/6Utb9G8vN0sfItgW19XvQx6+xu7P1kOA0qA97veFzadbm+MN8SxESZi/5nVoFNExPXSxHCd1orQsXV0TYkI7cJ38Hajhcp8PaH6p8g+fKjMeCMfIBCMAJFe/mviqVKe8fbq0lUxO/ilMdXdyDjrVizNcVV+8v7TZixqp7DECsAicn9n4ueZAWihPh3DbVoe1IIhzJpZ4xhTfUkVet1+MZ78TFNsC+2XjnhcBLTXyQGf6tGmNkbcah6C/4az2HQxIC8tb9Upjz2w60Oje5Lgv+Jd+hHLzeS+pGnhCRNJMn8Adae0juTQ14+vPqlD+W511WDefq5wPqc+kU6aWkETqnRJokEvZSbP5V3ycoQMxOLyCupU1d598dqZwfWfcGJi9+sFPC09obQP589GSc8QGQfDDWwqLwqlD8CEG0bnaCmYUaDP+A3lR3Oa5aK/MwuwJdbf3JGIFuuLzhuZPeZ2tnoeHmt2o5FvUHtr6D0cPYS4ru7qEWMz84Tznd0Zo3j5nIN+IcWb72MRZfkxZIYp4pjzP482B/CX/WSVgUQBWaBxrK892I+knV/B4FYCz4052LTvWW5BbcVv4UkNsOwgtZLrsIDeZtWYygaIsI=",
+ "public": {
+  "week_id": "2026-W41",
+  "week_label": "Uge 41 · 05/10/2026–09/10/2026",
+  "generated_at": "2026-10-15T10:53:53+02:00",
+  "status": "ok",
+  "runs": 3,
+  "completed": 3,
+  "dry_run": true,
+  "presets": [
+   "portfolio_review_board",
+   "risk_committee",
+   "earnings_research_desk"
+  ]
+ }
+}
