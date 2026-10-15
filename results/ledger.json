@@ -1,0 +1,15 @@
+{
+ "schema": 1,
+ "runs": [
+  {
+   "run_id": "2026-W42_20261015-1928_38777639922",
+   "generated_at": "2026-10-15T19:28:47+02:00",
+   "week_id": "2026-W42",
+   "cost_usd": 0.05,
+   "status": "ok",
+   "dry_run": true,
+   "runs": 5,
+   "completed": 5
+  }
+ ]
+}
