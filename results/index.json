@@ -4,14 +4,14 @@
   {
    "week_id": "2026-W41",
    "week_label": "Uge 41 · 05/10/2026–09/10/2026",
-   "generated_at": "2026-10-15T11:22:02+02:00",
-   "status": "ok",
-   "runs": 2,
+   "generated_at": "2026-10-15T12:23:38+02:00",
+   "status": "partial",
+   "runs": 3,
    "completed": 2,
-   "dry_run": true,
+   "dry_run": false,
    "presets": [
     "portfolio_review_board",
-    "earnings_research_desk"
+    "risk_committee"
    ]
   }
  ],
