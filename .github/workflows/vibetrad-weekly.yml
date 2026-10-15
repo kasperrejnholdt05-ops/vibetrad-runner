@@ -1,0 +1,92 @@
+name: Vibetrad ugekørsel
+
+# Lørdag kl. 08:00 svensk tid. GitHub-cron er UTC og kender ikke sommertid,
+# så der fyres både 06:00 UTC (= 08:00 sommertid) og 07:00 UTC (= 08:00 vintertid).
+# run_week.py springer over, hvis klokken i Stockholm er før 08:00, eller ugen
+# allerede er kørt. 09:30 UTC er et sikkerhedsnet, hvis GitHub var forsinket
+# eller den første kørsel fejlede.
+on:
+  schedule:
+    - cron: "0 6 * * 6"
+    - cron: "0 7 * * 6"
+    - cron: "30 9 * * 6"
+  workflow_dispatch:
+    inputs:
+      force_risk:
+        description: "Kør også risikoudvalget"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Tørkørsel uden LLM-kald (tester kæden gratis)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vibetrad-weekly
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 170
+    env:
+      PYTHONUNBUFFERED: "1"
+      TZ: Europe/Stockholm
+      VIBE_TRADING_HOME: /tmp/vibe-trading
+      LANGCHAIN_PROVIDER: anthropic
+      LANGCHAIN_MODEL_NAME: ${{ vars.VT_MODEL || 'claude-sonnet-5' }}
+      ANTHROPIC_BASE_URL: https://api.anthropic.com
+      ANTHROPIC_MAX_TOKENS: "16384"
+      VT_MAX_SWARMS: ${{ vars.VT_MAX_SWARMS || '3' }}
+      VT_TOKEN_BUDGET: ${{ vars.VT_TOKEN_BUDGET || '3000000' }}
+      VT_SWARM_TIMEOUT_MIN: ${{ vars.VT_SWARM_TIMEOUT_MIN || '45' }}
+      VT_FORCE_RISK: ${{ inputs.force_risk && 'true' || 'false' }}
+      VT_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skal der køres?
+        id: gate
+        run: python3 runner/run_week.py --results results --event "${{ github.event_name }}" --gate-only
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.ran == 'true'
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Installer Vibe-Trading
+        if: steps.gate.outputs.ran == 'true' && env.VT_DRY_RUN != 'true'
+        run: pip install --quiet -r requirements.txt
+
+      - name: Installer kryptering (tørkørsel)
+        if: steps.gate.outputs.ran == 'true' && env.VT_DRY_RUN == 'true'
+        run: pip install --quiet "cryptography>=42"
+
+      - name: Kør Vibe-Trading swarms
+        id: run
+        if: steps.gate.outputs.ran == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          VT_PORTFOLIO: ${{ secrets.VT_PORTFOLIO }}
+          VT_RESULTS_PASSPHRASE: ${{ secrets.VT_RESULTS_PASSPHRASE }}
+        run: python runner/run_week.py --results results --event "${{ github.event_name }}"
+
+      - name: Gem krypteret resultat
+        if: steps.run.outputs.ran == 'true'
+        run: |
+          git config user.name "vibetrad-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add results
+          git commit -m "Ugerapport ${{ steps.run.outputs.week }} (${{ steps.run.outputs.status }})" || exit 0
+          git push
+
+      - name: Marker fejl
+        if: steps.run.outputs.status == 'failed'
+        run: |
+          echo "Ingen swarms gennemført. Lås rapporten op i Vibetrad for detaljer."
+          exit 1
