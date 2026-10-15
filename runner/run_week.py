@@ -913,13 +913,17 @@ def main(argv: list[str] | None = None) -> int:
         if eodhd_info.get("error"):
             con.say("EODHD kunne ikke kobles på Vibe-Trading (detaljer krypteret i rapporten)")
     datacheck: dict | None = None
+    vt_why = ""
     if os.environ.get("VT_DATATJEK", "on").strip().lower() not in ("off", "0", "false", "nej"):
         with quiet_fds(log_path):  # kilderne skriver advarsler, der kan nævne symboler
             try:
-                vt_src = (dtj.DisabledSource("Vibe-Trading")
-                          if os.environ.get("VT_DATATJEK_VT", "on").strip().lower() == "off" else None)
-                if vt_src is None and args.dry_run and not dtj.VibeTradingSource().available:
-                    vt_src = dtj.DisabledSource("Vibe-Trading", "installeres ikke i en tørkørsel")
+                vt_src = None
+                if os.environ.get("VT_DATATJEK_VT", "on").strip().lower() == "off":
+                    vt_why = "slået fra med VT_DATATJEK_VT=off"
+                    vt_src = dtj.DisabledSource("Vibe-Trading")
+                elif args.dry_run and not dtj.VibeTradingSource().available:
+                    vt_why = "installeres ikke i en tørkørsel"
+                    vt_src = dtj.DisabledSource("Vibe-Trading", vt_why)
                 datacheck = dtj.run(portfolio, week, ref, vt=vt_src)
             except Exception as exc:  # noqa: BLE001 - datatjekket må aldrig stoppe kørslen
                 errors.append({"stage": "datatjek", "type": type(exc).__name__, "message": eo.redact(str(exc))[:2000],
@@ -934,8 +938,10 @@ def main(argv: list[str] | None = None) -> int:
                 eod_txt = "nøglen virker ikke" + (" (HTTP 401: forkert nøgle)" if "401" in str(acc.get("error")) else "")
             else:
                 eod_txt = f"ja, nøglen virker ({s['eodhd']['calls']} kald)"
+            vt_txt = ("ja" if s["vibe_trading"]["available"]
+                      else f"nej ({vt_why})" if vt_why else "nej")
             con.say(f"Datatjek: {datacheck['status']} · {c['ok']} ok, {c['warn']} advarsler, {c['fail']} fejl · "
-                    f"Vibe-Trading {'ja' if s['vibe_trading']['available'] else 'nej'} · EODHD {eod_txt}")
+                    f"Vibe-Trading {vt_txt} · EODHD {eod_txt}")
         else:
             con.say("Datatjek: kunne ikke gennemføres (detaljer krypteret i rapporten)")
 
@@ -1037,8 +1043,10 @@ def main(argv: list[str] | None = None) -> int:
         "github": {"repo": os.environ.get("GITHUB_REPOSITORY"), "run_id": os.environ.get("GITHUB_RUN_ID"),
                    "server": os.environ.get("GITHUB_SERVER_URL", "https://github.com")},
     }
-    run_id = (f"{week['id']}_{dt.datetime.fromisoformat(generated):%Y%m%d-%H%M}_"
-              f"{os.environ.get('GITHUB_RUN_ID') or secrets.token_hex(3)}")
+    # Én fil pr. kørsel. GITHUB_RUN_ID er ens ved "Re-run", så forsøgsnummeret kommer med fra forsøg 2.
+    gh_run, attempt = os.environ.get("GITHUB_RUN_ID"), os.environ.get("GITHUB_RUN_ATTEMPT", "1").strip()
+    suffix = (gh_run if attempt in ("", "1") else f"{gh_run}-{attempt}") if gh_run else secrets.token_hex(3)
+    run_id = f"{week['id']}_{dt.datetime.fromisoformat(generated):%Y%m%d-%H%M}_{suffix}"
     public = {"run_id": run_id, "week_id": week["id"], "week_label": week["label"], "generated_at": generated, "status": status,
               "runs": len(runs), "completed": len(done), "dry_run": args.dry_run,
               "presets": [r["preset"] for r in done], "week_to": week["to"],

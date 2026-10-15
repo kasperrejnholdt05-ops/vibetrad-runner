@@ -157,7 +157,7 @@ Opdatér `VT_PORTFOLIO` (Kopiér VT_PORTFOLIO i Vibetrad → `gh secret set VT_P
 
 ```bash
 pip install "cryptography>=42" pyyaml pytest pandas
-python -m pytest -q                      # 91 tests (EODHD-integrationstesten kører kun, hvor vibe-trading-ai er installeret)
+python -m pytest -q                      # 93 tests (EODHD-integrationstesten kører kun, hvor vibe-trading-ai er installeret)
 VT_PORTFOLIO="$(cat runner/portfolio.example.json)" VT_RESULTS_PASSPHRASE=0123456789abcdef \
   python runner/run_week.py --dry-run --event workflow_dispatch --results /tmp/vt-results
 ```

@@ -43,7 +43,7 @@ concurrency:
 
 jobs:
   run:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 330
     env:
       PYTHONUNBUFFERED: "1"
@@ -68,13 +68,13 @@ jobs:
       VT_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
       VT_DATATJEK: ${{ vars.VT_DATATJEK || 'on' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Skal der køres?
         id: gate
         run: python3 runner/run_week.py --results results --event "${{ github.event_name }}" --gate-only
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         if: steps.gate.outputs.ran == 'true'
         with:
           python-version: "3.12"
@@ -108,7 +108,7 @@ jobs:
           git config user.name "vibetrad-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add results
-          git commit -m "Ugerapport ${{ steps.run.outputs.week }} (${{ steps.run.outputs.status }})" || exit 0
+          git commit -m "Ugerapport ${{ steps.run.outputs.week }} (${{ steps.run.outputs.status }}${{ env.VT_DRY_RUN == 'true' && ', tørkørsel' || '' }})" || exit 0
           git push
 
       - name: Marker fejl
