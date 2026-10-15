@@ -1,5 +1,9 @@
 name: Vibetrad ugekørsel
 
+# Kører på knaptryk (Run workflow / knappen i Vibetrad). Den automatiske lørdagskørsel
+# er slået fra, indtil repo-variablen VT_SCHEDULE sættes til "on".
+# Hver kørsel starter med et datatjek, der krydstjekker porteføljens tal mellem
+# Vibe-Tradings egne kilder og EODHD (secret EODHD_API_KEY).
 # Lørdag kl. 08:00 svensk tid. GitHub-cron er UTC og kender ikke sommertid,
 # så der fyres både 06:00 UTC (= 08:00 sommertid) og 07:00 UTC (= 08:00 vintertid).
 # run_week.py springer over, hvis klokken i Stockholm er før 08:00, eller ugen
@@ -12,10 +16,19 @@ on:
     - cron: "30 9 * * 6"
   workflow_dispatch:
     inputs:
-      force_risk:
-        description: "Kør også risikoudvalget"
-        type: boolean
-        default: false
+      plan:
+        description: "fuld = alle relevante teams, kerne = kun risiko + CIO"
+        type: choice
+        options: [fuld, kerne]
+        default: fuld
+      budget_usd:
+        description: "Maks. forbrug for denne kørsel i USD (tom = standard 35). Månedsloftet gælder stadig."
+        type: string
+        default: ""
+      monthly_slot:
+        description: "Månedens ekstra team ved manuel kørsel: 1 ETF, 2 makro/valuta, 3 fondsvalg, 4 værdikomité, 5 idéjagt (tom = intet)"
+        type: string
+        default: ""
       dry_run:
         description: "Tørkørsel uden LLM-kald (tester kæden gratis)"
         type: boolean
@@ -31,7 +44,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 170
+    timeout-minutes: 330
     env:
       PYTHONUNBUFFERED: "1"
       TZ: Europe/Stockholm
@@ -40,11 +53,20 @@ jobs:
       LANGCHAIN_MODEL_NAME: ${{ vars.VT_MODEL || 'claude-sonnet-5' }}
       ANTHROPIC_BASE_URL: https://api.anthropic.com
       ANTHROPIC_MAX_TOKENS: "16384"
-      VT_MAX_SWARMS: ${{ vars.VT_MAX_SWARMS || '3' }}
-      VT_TOKEN_BUDGET: ${{ vars.VT_TOKEN_BUDGET || '3000000' }}
-      VT_SWARM_TIMEOUT_MIN: ${{ vars.VT_SWARM_TIMEOUT_MIN || '45' }}
-      VT_FORCE_RISK: ${{ inputs.force_risk && 'true' || 'false' }}
+      VT_PLAN: ${{ inputs.plan || vars.VT_PLAN || 'fuld' }}
+      VT_MAX_SWARMS: ${{ vars.VT_MAX_SWARMS || '6' }}
+      VT_SCHEDULE: ${{ vars.VT_SCHEDULE || 'off' }}
+      VT_RUN_BUDGET_USD: ${{ inputs.budget_usd || vars.VT_RUN_BUDGET_USD || '35' }}
+      VT_MONTHLY_BUDGET_USD: ${{ vars.VT_MONTHLY_BUDGET_USD || '95' }}
+      VT_CIO_RESERVE_USD: ${{ vars.VT_CIO_RESERVE_USD || '8' }}
+      VT_SWARM_TIMEOUT_MIN: ${{ vars.VT_SWARM_TIMEOUT_MIN || '40' }}
+      VT_EARNINGS_DAYS: ${{ vars.VT_EARNINGS_DAYS || '14' }}
+      VT_SKIP_PRESETS: ${{ vars.VT_SKIP_PRESETS || '' }}
+      VT_PRICE_IN_PER_MTOK: ${{ vars.VT_PRICE_IN_PER_MTOK || '2' }}
+      VT_PRICE_OUT_PER_MTOK: ${{ vars.VT_PRICE_OUT_PER_MTOK || '10' }}
+      VT_MONTHLY_SLOT: ${{ inputs.monthly_slot || '' }}
       VT_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+      VT_DATATJEK: ${{ vars.VT_DATATJEK || 'on' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -65,7 +87,7 @@ jobs:
 
       - name: Installer kryptering (tørkørsel)
         if: steps.gate.outputs.ran == 'true' && env.VT_DRY_RUN == 'true'
-        run: pip install --quiet "cryptography>=42"
+        run: pip install --quiet "cryptography>=42" pyyaml
 
       - name: Kør Vibe-Trading swarms
         id: run
@@ -74,6 +96,10 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           VT_PORTFOLIO: ${{ secrets.VT_PORTFOLIO }}
           VT_RESULTS_PASSPHRASE: ${{ secrets.VT_RESULTS_PASSPHRASE }}
+          # EODHD: anden datakilde til datatjekket og agenterne (valgfri, men anbefalet).
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          # FRED: gratis nøgle, der låser Vibe-Tradings get_macro_series op til makro-desken (valgfri).
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python runner/run_week.py --results results --event "${{ github.event_name }}"
 
       - name: Gem krypteret resultat
