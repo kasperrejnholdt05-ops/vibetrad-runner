@@ -254,7 +254,9 @@ def test_browser_webcrypto_can_decrypt(tmp_path):
 
 # --- ende-til-ende (tørkørsel som subprocess, så GitHub-loggen kan inspiceres) --
 def run_main(tmp_path, *extra, **env_over):
-    env = {**os.environ, "VT_PORTFOLIO": json.dumps(PORTFOLIO), "VT_RESULTS_PASSPHRASE": PASS, "VT_SCHEDULE": "on",
+    # CI sætter GITHUB_RUN_ID, GITHUB_EVENT_NAME osv.; de må ikke smitte af på testene (run_id, trigger)
+    base = {k: v for k, v in os.environ.items() if not k.startswith(("VT_", "GITHUB_", "ANTHROPIC"))}
+    env = {**base, "VT_PORTFOLIO": json.dumps(PORTFOLIO), "VT_RESULTS_PASSPHRASE": PASS, "VT_SCHEDULE": "on",
            "VT_PBKDF2_ITER": "1000", "GITHUB_OUTPUT": str(tmp_path / "out.txt"), "EODHD_API_KEY": "",
            "EODHD_API_TOKEN": "", "VT_DATATJEK_VT": "off", **env_over}
     env.pop("ANTHROPIC_API_KEY", None)
@@ -308,6 +310,24 @@ def test_end_to_end_skip_then_partial(tmp_path):
     # hver kørsel gemmes for sig (knaptryk flere gange om ugen overskriver ikke hinanden)
     assert len(idx["weeks"]) >= 2 and idx["weeks"][0]["status"] == "partial"
     assert len({w["run_id"] for w in idx["weeks"]}) == len(idx["weeks"])
+
+
+def test_run_id_unique_per_github_run_and_attempt(tmp_path):
+    # samme GitHub-kørsel genkørt ("Re-run") i samme minut må ikke overskrive det første resultat
+    for attempt in ("1", "2"):
+        p = run_main(tmp_path, "--event", "workflow_dispatch", "--now", "2026-10-17T10:00",
+                     GITHUB_RUN_ID="4242", GITHUB_RUN_ATTEMPT=attempt)
+        assert p.returncode == 0, p.stderr
+    ids = [w["run_id"] for w in json.loads((tmp_path / "results" / "index.json").read_text())["weeks"]]
+    assert len(ids) == 2 and len(set(ids)) == 2
+    assert {i.rsplit("_", 1)[1] for i in ids} == {"4242", "4242-2"}
+
+
+def test_console_explains_why_only_eodhd_is_checked(tmp_path):
+    # ADVARSEL med kun én kilde er forventet, når Vibe-Trading er slået fra; loggen skal sige hvorfor
+    p = run_main(tmp_path, "--event", "workflow_dispatch", "--now", "2026-10-17T10:00")
+    assert p.returncode == 0, p.stderr
+    assert "Vibe-Trading nej (slået fra med VT_DATATJEK_VT=off)" in p.stdout
 
 
 def test_gate_only_needs_no_secrets(tmp_path):
