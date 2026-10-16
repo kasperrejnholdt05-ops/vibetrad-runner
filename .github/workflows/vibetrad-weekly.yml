@@ -109,7 +109,29 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add results
           git commit -m "Ugerapport ${{ steps.run.outputs.week }} (${{ steps.run.outputs.status }}${{ env.VT_DRY_RUN == 'true' && ', tørkørsel' || '' }})" || exit 0
-          git push
+          # Er main ændret under kørslen (fx en kodeændring), afvises push. Så hentes main, og
+          # resultat-commit'et lægges ovenpå (results/ ændres kun af denne workflow). Op til 5 forsøg.
+          for i in 1 2 3 4 5; do
+            git push -q origin HEAD:main && exit 0
+            echo "Push afvist (forsøg $i af 5) – henter nyeste main og prøver igen"
+            git pull -q --rebase origin main || { git rebase --abort; echo "Kunne ikke lægge resultatet oven på main"; exit 1; }
+            sleep $((i * 5))
+          done
+          exit 1
+
+      # Sikkerhedsnet: den krypterede rapport gemmes også på kørslen i 14 dage, så en kørsel til
+      # op til 35 USD aldrig går tabt, selv hvis push fejler. Hent den under kørslens "Artifacts".
+      - name: Backup af krypteret resultat
+        if: always() && steps.run.outputs.ran == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: vibetrad-resultat-${{ steps.run.outputs.run_id || github.run_id }}
+          path: |
+            results/latest.enc.json
+            results/index.json
+            results/ledger.json
+          retention-days: 14
+          if-no-files-found: ignore
 
       - name: Marker fejl
         if: steps.run.outputs.status == 'failed'
