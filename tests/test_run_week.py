@@ -141,10 +141,81 @@ def test_plan_first_saturday_odd_week_and_core():
 
 def test_cio_gets_other_teams_conclusions():
     runs = [{"preset": "risk_committee", "label": "Risikoudvalg", "status": "completed", "final_report": "VaR 95 % = 4,1 %"},
-            {"preset": "x", "label": "Fejlet", "status": "error", "final_report": None}]
+            {"preset": "x", "label": "Fejlet", "status": "error", "final_report": None},
+            {"preset": "y", "label": "Sprunget", "status": "skipped", "skip_reason": "Budget brugt", "tasks": []}]
     g = rw.cio_goal_with_inputs("Mål.", runs)
-    assert g.startswith("Mål.") and "### Risikoudvalg" in g and "VaR 95 % = 4,1 %" in g and "Fejlet" not in g
+    assert g.startswith("Mål.") and "### Risikoudvalg" in g and "VaR 95 % = 4,1 %" in g
+    # teams uden rapport nævnes, så CIO'en ikke tror, at de er enige
+    assert "### Fejlet: ingen rapport (error)" in g and "### Sprunget: ingen rapport (skipped: Budget brugt)" in g
     assert rw.cio_goal_with_inputs("Mål.", []) == "Mål."
+
+
+def _long_report(n: int) -> str:
+    intro = f"# Team {n}\n\n" + ("Indledning med baggrund og metode. " * 160)
+    body = "\n\n".join(f"## {k}. Analyse {k}\n" + ("Mellemregning og tabeller. " * 60) for k in range(1, 5))
+    return (f"{intro}\n\n{body}\n\n## 5. Samlet konklusion\nKONKLUSION-{n}: sælg ikke, men trim {n} pp før regnskab.\n\n"
+            "## 6. Datakilder og forbehold\n" + ("Kilde. " * 300))
+
+
+def test_cio_digest_keeps_every_team_and_their_conclusions():
+    labels = ["Risikoudvalg", "Regnskabsdesk", "ETF-allokering", "Investeringskomité"]
+    runs = [{"preset": f"p{n}", "label": lab, "status": "completed", "final_report": _long_report(n), "tasks": []}
+            for n, lab in enumerate(labels, 1)]
+    assert all(len(r["final_report"]) > 12000 for r in runs)
+    g = rw.cio_goal_with_inputs("Mål.", runs)
+    extra = g[len("Mål."):]
+    assert len(extra) <= 16000
+    for n, lab in enumerate(labels, 1):  # det 4. team blev før skåret helt væk, og konklusionerne stod sidst
+        assert f"### {lab}" in extra and f"KONKLUSION-{n}: sælg ikke, men trim {n} pp" in extra, lab
+    assert "Kilde. Kilde. Kilde. Kilde. Kilde." not in extra  # kilder og forbehold prioriteres lavest
+    assert "Indledning med baggrund" in extra  # indledningen er med, men kort
+
+
+def test_report_digest_short_text_and_no_headings():
+    assert rw.report_digest("Kort rapport.", 100) == "Kort rapport."
+    flat = "START " + "midte " * 2000 + "SLUTKONKLUSION"
+    d = rw.report_digest(flat, 1000)
+    assert d.startswith("START") and d.rstrip().endswith("SLUTKONKLUSION") and len(d) <= 1010
+
+
+def test_agents_without_report_are_flagged_for_log_and_cio():
+    plan_text = ("Plan\nLoad methodology: risk skills.\nFetch price history for the holdings.\n"
+                 "Core risk engine: portfolio_risk_xray.\nExecuting the data-gathering calls now.")
+    assert rw.classify_report(plan_text) == "plan_only"
+    assert rw.classify_report("(no summary)") == "empty" and rw.classify_report(None) == "empty"
+    real = "## Konklusion\nVaR 95 % er 4,30 %, ES 7,30 %, drawdown −34,7 %. Anbefaling: reducér gradvist. " * 3
+    assert rw.classify_report(real) == "ok" and rw.classify_report("Tørkørsel: Analytiker 1 for x.") == "ok"
+    agents = [SimpleNamespace(id=f"a{i}", role=r) for i, r in enumerate(("Head of Risk", "Risk Inspector", "Tail Risk Analyst"))]
+    tasks = [SimpleNamespace(id=f"t{i}", agent_id=f"a{i}", status="completed", summary=txt, error=None, worker_iterations=5,
+                             started_at=None, completed_at=None) for i, txt in enumerate((real, plan_text, None))]
+    run = SimpleNamespace(id="r1", status="completed", agents=agents, tasks=tasks, final_report=real,
+                          total_input_tokens=10, total_output_tokens=10, completed_at=None, provider="x", model="y")
+    s = rw.summarize_run(run, "risk_committee", "r", rw.now_sto(), 1.0, price_in=2, price_out=10)
+    assert s["agents_without_report"] == ["Risk Inspector", "Tail Risk Analyst"]
+    assert [t["report"] for t in s["tasks"]] == ["ok", "plan_only", "empty"]
+    g = rw.cio_goal_with_inputs("Mål.", [s])
+    assert "(Agenter uden rapport i teamet: Risk Inspector, Tail Risk Analyst)" in g
+
+
+def test_dry_run_flags_agent_without_report_and_shows_real_spend(tmp_path):
+    res = tmp_path / "results"
+    res.mkdir()
+    (res / "ledger.json").write_text(json.dumps({"schema": 1, "runs": [
+        {"run_id": "2026-W41", "generated_at": "2026-10-15T12:23:38+02:00", "cost_usd": 10.04, "dry_run": False},
+        {"run_id": "t", "generated_at": "2026-10-15T19:28:47+02:00", "cost_usd": 0.05, "dry_run": True}]}))
+    pf = dict(PORTFOLIO, monthly_deposit_sek=20000, courtage_class="Jubileum")
+    p = run_main(tmp_path, "--event", "workflow_dispatch", "--now", "2026-10-16T12:00", VT_BUDGET_RESET_DAY="23",
+                 VT_DRY_EMPTY="risk_committee", VT_PORTFOLIO=json.dumps(pf))
+    assert p.returncode == 0, p.stderr
+    assert "brugt siden 23/09/2026: 10.04 af 95 USD" in p.stdout  # tørkørslen viser nu det rigtige forbrug
+    assert "· Risikoudvalg: completed" in p.stdout and "1 af 2 agenter uden rapport: Analytiker 2" in p.stdout
+    log = p.stdout + p.stderr
+    for secret in ("20000", "20 000", "Jubileum"):
+        assert secret not in log, f"{secret!r} lækket til loggen"
+    data = rw.decrypt(json.loads((res / "latest.enc.json").read_text()), PASS)
+    risk = next(r for r in data["runs"] if r["preset"] == "risk_committee")
+    assert risk["agents_without_report"] == ["Analytiker 2"] and risk["tasks"][1]["report"] == "empty"
+    assert data["totals"]["month_spent_before_usd"] == 10.04
 
 
 def test_shellfree_presets_swap_bash_for_quant_tools(tmp_path):
@@ -623,3 +694,52 @@ def test_transition_policy_goal_text_and_risk_scenarios():
     assert p2["weight_policy"] == "limit" and "maks. vægt" in rw.portfolio_text(p2)
     plan2 = rw.build_plan(p2, sto("2026-10-17T08:00"), rw.week_window(sto("2026-10-17T08:00")), reports=[])
     assert next(s for s in plan2 if s["preset"] == "portfolio_review_board")["vars"]["goal"].startswith("Egen tekst.")
+
+
+def test_deposit_and_courtage_reach_the_agents_safely():
+    p = rw.load_portfolio(json.dumps(dict(PORTFOLIO, weight_policy="target", monthly_deposit_sek=20000,
+                                          courtage_class="Jubileum<script>")))
+    assert p["monthly_deposit_sek"] == 20000 and p["courtage_class"] == "Jubileumscript"
+    t = rw.portfolio_text(p)
+    assert "Månedligt indskud: 20 000 SEK" in t and "kurtageklasse Jubileumscript" in t and "angiv ingen kurtagesats" in t
+    for bad in ("20000", -5, True, 0, 1e9):
+        q = rw.load_portfolio(json.dumps(dict(PORTFOLIO, monthly_deposit_sek=bad)))
+        assert q["monthly_deposit_sek"] is None, bad
+        assert "Månedligt indskud: ikke oplyst" in rw.portfolio_text(q) and "kurtageklasse ikke oplyst" in rw.portfolio_text(q)
+    goal = next(s for s in rw.build_plan(p, sto("2026-10-17T08:00"), rw.week_window(sto("2026-10-17T08:00")), reports=[])
+                if s.get("cio"))["vars"]["goal"]
+    assert "måneders indskud" in goal
+
+
+@pytest.mark.parametrize("slot,preset,key", [("1", "etf_allocation_desk", "market"), ("3", "fund_selection_panel", "goal")])
+def test_etf_and_fund_teams_only_allocate_new_money(slot, preset, key, monkeypatch):
+    monkeypatch.setenv("VT_MONTHLY_SLOT", slot)
+    p = rw.load_portfolio(json.dumps(dict(PORTFOLIO, monthly_deposit_sek=20000)))
+    plan = rw.build_plan(p, sto("2026-10-16T12:00"), rw.week_window(sto("2026-10-16T12:00")), reports=[])
+    txt = next(s for s in plan if s["preset"] == preset)["vars"][key]
+    assert "nye indskud (ca. 20 000 SEK om måneden)" in txt and "sælg ikke de eksisterende aktier" in txt
+    assert "fordel ikke hele porteføljens værdi" in txt and "Angiv ingen kurtagesats" in txt
+
+
+def test_symbol_guidance_for_agents_that_fetch_prices(tmp_path):
+    import yaml
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "etf_allocation_desk.yaml").write_text(yaml.safe_dump({"name": "etf_allocation_desk", "agents": [
+        {"id": "screener", "system_prompt": "Screen.", "tools": ["bash", "get_market_data"]}]}))
+    (src / "custom_desk.yaml").write_text(yaml.safe_dump({"name": "custom_desk", "agents": [
+        {"id": "writer", "system_prompt": "Skriv.", "tools": ["read_file"]}]}))
+    rw.prepare_shellfree_presets(tmp_path / "dst", src)
+    (screener,) = yaml.safe_load((tmp_path / "dst" / "etf_allocation_desk.yaml").read_text())["agents"]
+    (writer,) = yaml.safe_load((tmp_path / "dst" / "custom_desk.yaml").read_text())["agents"]
+    assert "ACWI.US" in screener["system_prompt"] and "China A-share" in screener["system_prompt"]
+    assert "never present a number from that call" in screener["system_prompt"]
+    assert "ACWI.US" not in writer["system_prompt"]
+
+
+def test_cio_prompt_requires_disagreements_scenarios_and_falsifiers():
+    cio = rw.EXTRA_PROMPT["portfolio_review_board"]["chief_investment_officer"]
+    for txt in ("Uenigheder mellem teams", "loss scenarios in SEK", "Jeg tager fejl, hvis", "months of deposits",
+                "delivered no report"):
+        assert txt in cio, txt
+    assert "never compare it with" in rw.FRED_GUIDANCE

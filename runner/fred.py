@@ -36,7 +36,7 @@ SERIES: tuple[tuple[str, str, str, int], ...] = (
     ("DFF", "Fed funds-rente (effektiv)", "%", 7),
     ("VIXCLS", "VIX (forventet aktievolatilitet)", "", 7),
     ("BAMLH0A0HYM2", "US high yield-kreditspænd (OAS)", "%", 7),
-    ("DEXSDUS", "USD/SEK (Fed H.10, middag i New York)", "SEK", 16),  # H.10 udgives ugentligt
+    ("DEXSDUS", "USD/SEK (Fed H.10, ugentlig – kun makrokontekst, ikke til omregning)", "SEK", 16),  # H.10 udgives ugentligt
 )
 HEADLINE = "DGS10"
 

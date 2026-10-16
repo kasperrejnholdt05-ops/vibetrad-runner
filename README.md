@@ -43,7 +43,7 @@ Før agenterne starter, henter `runner/datatjek.py` de samme tal fra to uafhæng
 |---|---|---|---|
 | Lukkekurs samme handelsdag | ≤ 0,5 % | ≤ 2 % | > 2 % |
 | Ugeafkast | ≤ 0,5 pp | ≤ 2 pp | > 2 pp |
-| Valutakurs (USD/SEK, DKK/SEK …) | ≤ 0,3 % | ≤ 1 % | > 1 % |
+| Valutakurs (USD/SEK, DKK/SEK …) | ≤ 0,5 % | ≤ 1 % | > 1 % |
 | Porteføljens værdi i SEK | ≤ 0,5 % | ≤ 2 % | > 2 % |
 | Seneste handelsdag | ens | forskellig | > 6 dage gammel |
 | Valuta | som børsen | | anden valuta |
@@ -57,8 +57,9 @@ Der sammenlignes på seneste afsluttede handelsdag (Yahoo leverer også dagens u
 Begivenheder, der ikke er datafejl, vises for sig: estimeret udløb af lock-up for nyligt børsnoterede selskaber (IPO + 180 dage, fx SpaceX ca. 09/12/2026) samt udbytter og splits.
 
 Resultatet bruges tre steder:
-- **Alle agenter** får en kompakt facit-tabel i deres instruks: kurs, uge, værdi i SEK, vægt efter markedsværdi og verificeret regnskabsdato.
+- **Alle agenter** får en kompakt facit-tabel i deres instruks: kurs, ugeafkast i lokal valuta og i SEK, værdi i SEK, vægt efter markedsværdi og verificeret regnskabsdato. Under tabellen står porteføljens uge i SEK inkl. valutaeffekt (fra fredagens lukkekurs og valutakurs), resultatet siden køb for aktierne alene (kontanten er ikke med) og, når et månedligt indskud er oplyst, hvor mange måneders indskud hver overvægtet position kræver for at nå sit mål ved uændrede kurser og uden salg. Agenterne skal altså ikke selv regne disse tal.
 - **CIO'en** får afvigelserne og skal skrive et afsnit "Datakvalitet".
+- **Valuta-afvigelser** forklares i selve advarslen (begge kilders kurs, og at kilderne lukker valutadøgnet på forskellige tidspunkter). FRED's ugentlige DEXSDUS indgår ikke i sammenligningen og er mærket "kun makrokontekst".
 - **Planen**: regnskabsdesken bruger de krydstjekkede datoer.
 
 Hele tjekket ligger krypteret i rapporten. Vibetrad viser det under Ugerapport → **Datatjek**, og knappen **Krydstjek nu med EODHD** sammenligner rapportens kurser med EODHD igen og viser kursen nu. Den kører gennem EODHD-connectoren i Claude, ikke på API-kreditten. GitHub-loggen viser kun status og antal (fx `Datatjek: PASS · 17 ok, 0 advarsler, 0 fejl`).
@@ -120,11 +121,27 @@ Alle Vibe-Tradings presets bruger normalt `bash` til at skrive og køre Python. 
 
 Samtidig får agenterne ekstra Vibe-Trading-skills: `research-discipline` (bias-tjekliste) på alle syntetiserende agenter, `thesis-tracker` og `investor-lenses` på CIO'en, `risk-analysis`, `hedging-strategy` og `correlation-regime` i risikoudvalget, `management-deep-dive` i værdikomitéen og `private-company-research` (rammen for nyligt børsnoterede selskaber som SpaceX) hos CIO'en, værdikomitéen, regnskabsdesken og fundamental-teamet. Når målet er SPCX, får agenterne også en eksplicit henvisning til den. CIO'en får også `report_audit`, så den faktatjekker en stikprøve af sine egne tal før aflevering og afslutter med "Faktatjek: PASS/FAIL".
 
+## CIO'ens input fra de andre teams
+
+CIO'en kører sidst og får de andre teams' rapporter i sit mål. Hvert team får lige meget plads (i alt 16 000 tegn), og pladsen går til indledningen og afsnittene med konklusioner, beslutninger, planer og scenarier (fundet via overskrifterne), mens kilder og forbehold kommer sidst. Teams, der blev sprunget over eller fejlede, nævnes ("ingen rapport"), og det samme gør agenter, der ikke leverede en rapport. CIO'en skal lave en tabel "Uenigheder mellem teams", gengive risikoudvalgets scenarier i SEK, skrive "Jeg tager fejl, hvis …" ved hver hovedbeslutning og regne overgangsplanen i måneders indskud.
+
+(Indtil 16/10/2026 fik CIO'en kun de første 3 000 tegn pr. team og højst 9 000 i alt, så det fjerde team faldt helt ud og konklusionerne nåede ikke frem. Det viste testkørslen 16/10/2026.)
+
+## Agenter uden rapport
+
+En agent kan afslutte uden at levere andet end en plan ("Executing the data-gathering calls now") eller helt uden tekst. Runneren markerer dem (`report: plan_only/empty` pr. agent og `agents_without_report` pr. team), GitHub-loggen viser fx `· Risikoudvalg: completed · … · 1 af 4 agenter uden rapport: Tail Risk Analyst`, og Vibetrad viser "Ingen rapport" ved agenten.
+
+## Symboler og gebyrer
+
+Alle agenter med data-værktøjer får at vide, at amerikanske aktier og ETF'er skal skrives med `.US` (fx `ACWI.US`). Uden suffix tolker Vibe-Trading 0.1.16 symbolet som en kinesisk A-aktie, og kaldet fejler. De må heller ikke citere tal fra et kald, der fejlede, eller angive en kurtagesats, der ikke står i deres instruks.
+
 ## Vægtpolitik
 
 `weight_policy` i `VT_PORTFOLIO` styrer, hvordan `max_weight` bruges. `limit` (standard) er en hård grænse. `target` (Kaspers valg 16/10/2026) gør 10 % pr. aktie til et langsigtet mål: CIO'en skal foreslå en overgangsplan med trin og tidshorisont i stedet for at sælge ned med det samme, og Vibetrads tjekliste viser "Over det langsigtede mål" som advarsel i stedet for en overskredet grænse. Knappen Kopiér VT_PORTFOLIO i Vibetrad sætter `target`.
 
 Risikoudvalget regner altid tabet i SEK i fire scenarier: den største position −30 % og −50 %, USD/SEK −10 % og amerikansk tech samlet −25 %. VaR bruges kun som supplement.
+
+`monthly_deposit_sek` (månedligt indskud) og `courtage_class` (kurtageklasse hos Nordnet) i `VT_PORTFOLIO` kommer med i porteføljeteksten. Indskuddet bruges til overgangsplanen; ETF- og fondsteamet fordeler kun nye indskud og kontanten, aldrig hele porteføljens værdi. Kurtagesatsen kendes ikke af agenterne, så de må ikke angive en. Begge felter sættes under Opsætning i Vibetrad og kommer med, når du kopierer VT_PORTFOLIO. Ingen af dem vises i GitHub-loggen.
 
 ## Budget
 
@@ -132,7 +149,7 @@ Risikoudvalget regner altid tabet i SEK i fire scenarier: den største position 
 |---|---|---|
 | `VT_RUN_BUDGET_USD` | `35` | Maks. estimeret forbrug pr. kørsel (kan sættes pr. kørsel med input `budget_usd`). Ekstra teams springes over, før CIO'en mister sin reserve. |
 | `VT_SCHEDULE` | `off` | `on` slår den automatiske lørdagskørsel til igen. |
-| `VT_MONTHLY_BUDGET_USD` | `95` | Loft pr. budgetperiode (af Max-abonnementets API-kredit på 100 USD). Læses fra `results/ledger.json`. |
+| `VT_MONTHLY_BUDGET_USD` | `95` | Loft pr. budgetperiode (af Max-abonnementets API-kredit på 100 USD). Læses fra `results/ledger.json`. Også en tørkørsel viser periodens rigtige forbrug, så budgettet kan tjekkes gratis (tørkørsler tæller ikke med). |
 | `VT_BUDGET_RESET_DAY` | `23` | Dag i måneden, hvor budgetperioden starter forfra. Max-kreditten fornyes på faktureringsdagen og udløber ved periodens slutning. `1` = kalendermåned. |
 | `VT_CIO_RESERVE_USD` | `8` | Holdes altid tilbage til CIO-gennemgangen. |
 | `VT_PRICE_IN_PER_MTOK` / `VT_PRICE_OUT_PER_MTOK` | `2` / `10` | Pris pr. mio. tokens for claude-sonnet-5 (ind/ud) til estimatet. Tjek platform.claude.com → Usage. |
@@ -186,7 +203,7 @@ Opdatér `VT_PORTFOLIO` (Kopiér VT_PORTFOLIO i Vibetrad → `gh secret set VT_P
 
 ```bash
 pip install "cryptography>=42" pyyaml pytest pandas
-python -m pytest -q                      # 120 tests (EODHD-integrationstesten kører kun, hvor vibe-trading-ai er installeret)
+python -m pytest -q                      # 133 tests (EODHD-integrationstesten kører kun, hvor vibe-trading-ai er installeret)
 VT_PORTFOLIO="$(cat runner/portfolio.example.json)" VT_RESULTS_PASSPHRASE=0123456789abcdef \
   python runner/run_week.py --dry-run --event workflow_dispatch --results /tmp/vt-results
 ```

@@ -175,7 +175,9 @@ def test_brief_and_cio_instruction():
     b = dtj.agent_brief(dc)
     assert b.startswith("## Vibetrad datatjek 15/10/2026: PASS")
     assert "| SpaceX (SPCX.US) |" in b and "(maks 10 %)" in b and "03/11/2026 efter lukning (3 kilder)" in b and "| Novo Nordisk A/S (NOVO-B.CO) |" in b
-    assert "USD/SEK" in b and "lock-up" in b and len(b) <= 3800
+    assert "USD/SEK" in b and "lock-up" in b and len(b) <= 4800
+    assert "**Ugen i SEK inkl. valuta:**" in b and "**Resultat siden køb (kun aktier):**" in b
+    assert "| Uge (lokal / SEK) |" in b and "**Indskud:**" not in b  # intet indskud oplyst i P
     assert "Datakvalitet" in dtj.cio_instruction(dc) and dtj.agent_brief(None) == ""
     eod_px = {c: dict(series(c, 0.05 if c == "GOOGL.US" else 0), source="eodhd") for c in BASE}
     bad = run(eod_px=eod_px)
@@ -339,3 +341,58 @@ def test_transition_policy_changes_the_weight_label():
     assert "(langsigtet mål 10 %)" in brief and "(maks 10 %)" not in brief
     vt, eod = sources()
     assert "(maks 10 %)" in dtj.agent_brief(dtj.run(P, WEEK, REF, vt=vt, eod=eod))
+
+
+def _fx_rows(values):
+    return {"rows": list(zip(DAYS, values)), "source": "yahoo", "currency": None}
+
+
+def test_week_in_sek_includes_currency_and_uses_friday_fx():
+    usd = [10.0] * 6 + [9.95, 9.92, 9.90]  # 09/10 = 10,00 → 14/10 = 9,90 (−1 %)
+    px = {c: series(c) for c in BASE}
+    px["USDSEK=X"] = _fx_rows(usd)
+    vt, eod = sources(vt_px=px, eod_px={k: dict(v, source="eodhd") for k, v in px.items()})
+    dc = dtj.run(P, WEEK, REF, vt=vt, eod=eod)
+    ws, rows = dc["portfolio"]["week_sek"], {r["ticker"]: r for r in dc["portfolio"]["rows"]}
+    sp, gg = series("SPCX.US")["rows"], series("GOOGL.US")["rows"]
+    v0 = 17 * sp[5][1] * 10.0 + 2 * gg[5][1] * 10.0 + 1342  # fredag 09/10 med fredagens valutakurs
+    v1 = 17 * sp[-1][1] * 9.9 + 2 * gg[-1][1] * 9.9 + 1342
+    assert ws["start_sek"] == pytest.approx(v0, abs=0.05) and ws["end_sek"] == pytest.approx(v1, abs=0.05)
+    assert ws["pct"] == pytest.approx((v1 / v0 - 1) * 100, abs=0.01) and ws["fx_pp"] < -0.9
+    assert ws["fx"]["USD"] == {"from_date": "2026-10-09", "from": 10.0, "to_date": "2026-10-14", "to": 9.9}
+    local = (sp[-1][1] / sp[5][1] - 1) * 100
+    assert rows["SPCX.US"]["week_pct_local"] == pytest.approx(local, abs=0.01)
+    assert rows["SPCX.US"]["week_pct_sek"] == pytest.approx(((1 + local / 100) * 0.99 - 1) * 100, abs=0.01)
+    b = dtj.agent_brief(dc)
+    assert "**Ugen i SEK inkl. valuta:** " in b and "USD/SEK 10,0000 (09/10/2026) → 9,9000 (14/10/2026)" in b
+
+
+def test_profit_and_loss_and_deposit_path():
+    p = dict(P, monthly_deposit_sek=20000.0)
+    vt, eod = sources()
+    dc = dtj.run(p, WEEK, REF, vt=vt, eod=eod)
+    pf = dc["portfolio"]
+    rows = {r["ticker"]: r for r in pf["rows"]}
+    tv = rows["SPCX.US"]["value_sek"] + rows["GOOGL.US"]["value_sek"]
+    assert pf["pl"]["cost_sek"] == 26743 + 7046 and pf["pl"]["pl_sek"] == pytest.approx(tv - 33789, abs=0.05)
+    assert pf["pl"]["cash_sek"] == 1342  # kontanten indgår ikke i resultatet
+    path = {(d["ticker"], d["level_pct"]): d["months"] for d in pf["deposit_path"]}
+    total, sp = pf["total_sek"], rows["SPCX.US"]["value_sek"]
+    assert set(path) == {("SPCX.US", 50.0), ("SPCX.US", 25.0), ("SPCX.US", 10.0), ("GOOGL.US", 10.0)}
+    assert path[("SPCX.US", 10.0)] == pytest.approx((sp / 0.10 - total) / 20000, abs=0.05)
+    b = dtj.agent_brief(dc)
+    assert "**Indskud:** 20 000 SEK om måneden" in b and "SpaceX under 50 % om" in b and "Alphabet A under 10 % om" in b
+
+
+@pytest.mark.parametrize("bump,status", [(0.004, "ok"), (0.008, "warn")])
+def test_fx_noise_below_half_percent_and_explained_notes(bump, status):
+    eod_px = {c: dict(series(c), source="eodhd") for c in BASE}
+    eod_px["USDSEK=X"] = dict(series("USDSEK=X", bump), source="eodhd")
+    dc = run(eod_px=eod_px)
+    usd = next(f for f in dc["fx"] if f["pair"] == "USDSEK")
+    assert usd["status"] == status
+    if status == "warn":
+        note = usd["notes"][0]
+        assert "(Vibe-Trading 10," in note and ", EODHD 10," in note
+        assert "kilderne lukker valutadøgnet på forskellige tidspunkter" in note and "DEXSDUS" in note
+        assert any(s.startswith("ADVARSEL USDSEK") for s in dc["issues"])

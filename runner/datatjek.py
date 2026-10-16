@@ -39,7 +39,9 @@ BENCHMARK = "ACWI.US"
 # Tolerancer (procent / procentpoint)
 PRICE_OK, PRICE_WARN = 0.5, 2.0
 WEEK_OK, WEEK_WARN = 0.5, 2.0
-FX_OK, FX_WARN = 0.3, 1.0
+# Valuta: kilderne "lukker" døgnhandlen på forskellige tidspunkter (USD/SEK svinger ofte 1 % i løbet af en dag),
+# så under 0,5 % er støj. Porteføljens værdi bruger samme kurs for begge kilder.
+FX_OK, FX_WARN = 0.5, 1.0
 VALUE_OK, VALUE_WARN = 0.5, 2.0
 MCAP_OK, MCAP_WARN = 5.0, 20.0
 STALE_DAYS = 6
@@ -403,7 +405,12 @@ def _compare_series(vt: dict | None, eod: dict | None, week: dict, ref_day: str,
             row.update(compare_date=d, diff_pct=round(diff, 3) if diff is not None else None)
             g = grade(diff, ok, warn)
             if g != "ok":
-                row["notes"].append(f"lukkekurs {dmy(d)} afviger {dk(diff)} %")
+                dd = 4 if fx else 2
+                note = f"lukkekurs {dmy(d)} afviger {dk(diff)} % (Vibe-Trading {_nf(a, dd)}, EODHD {_nf(b, dd)})"
+                if fx:
+                    note += ("; kilderne lukker valutadøgnet på forskellige tidspunkter, så værdier i SEK bruger EODHD. "
+                             "FRED's ugentlige DEXSDUS er ikke en del af denne sammenligning")
+                row["notes"].append(note)
             row["status"] = worst([row["status"], g])
             if row["vt"]["date"] != row["eodhd"]["date"]:
                 gap = abs((dt.date.fromisoformat(row["vt"]["date"]) - dt.date.fromisoformat(row["eodhd"]["date"])).days)
@@ -473,6 +480,69 @@ def _fix_pence(vt_px: dict, eod_px: dict, cut: str) -> dict[str, str]:
             e["rows"] = [(d, c / 100) for d, c in e["rows"]]
             out[code] = "EODHD's kurs i pence (GBX) er omregnet til pund" + ("" if ratio else " (antaget)")
     return out
+
+
+def _week_pl_deposits(p: dict, prow: list[dict], px: dict, week: dict, total: float | None
+                      ) -> tuple[dict | None, dict | None, list[dict]]:
+    """Ugen i SEK inkl. valuta, resultat siden køb (kun aktier) og hvor mange måneders indskud der skal til,
+    før hver position når sit mål ved uændrede kurser. Tallene gives til agenterne, så de ikke selv regner dem.
+
+    Ugens start er seneste lukkekurs før ugens mandag (samme dag for kurs og valuta), så weekend-noteringer
+    af valuta ikke bruges.
+    """
+    cur = p.get("currency") or "SEK"
+
+    def fx_on(ccy: str | None, day: str) -> tuple[str, float] | None:
+        if ccy == cur:
+            return day, 1.0
+        s = px.get(f"{ccy}{cur}=X") if ccy else None
+        return last_on_or_before(s["rows"], day) if s else None
+
+    start, fx_effect, complete, used_fx = p.get("cash_sek") or 0.0, 0.0, bool(prow), {}
+    for r in prow:
+        rows = (px.get(r["ticker"]) or {}).get("rows") or []
+        before = [x for x in rows if x[0] < week["from"]]
+        if not before or r.get("value_sek") is None or not r.get("qty") or r.get("fx") is None:
+            complete = False
+            continue
+        b_day, b_px = before[-1]
+        f0 = fx_on(r.get("currency"), b_day)
+        if not f0 or not b_px:
+            complete = False
+            continue
+        v0 = r["qty"] * b_px * f0[1]
+        r["week_pct_local"] = round((r["close"] / b_px - 1) * 100, 2)
+        r["week_pct_sek"] = round((r["value_sek"] / v0 - 1) * 100, 2)
+        r["fx_week_pct"] = round((r["fx"] / f0[1] - 1) * 100, 2)
+        start += v0
+        fx_effect += r["qty"] * r["close"] * (r["fx"] - f0[1])
+        if r.get("currency") and r["currency"] != cur:
+            used_fx[r["currency"]] = {"from_date": f0[0], "from": f0[1], "to_date": r.get("date"), "to": r["fx"]}
+    week_sek = ({"start_sek": round(start, 2), "end_sek": round(total, 2), "pct": round((total / start - 1) * 100, 2),
+                 "fx_pp": round(fx_effect / start * 100, 2), "fx": used_fx}
+                if complete and total and start else None)
+
+    cost = {h.get("ticker"): h.get("cost_sek") for h in p.get("holdings", []) if isinstance(h, dict)}
+    pl = None
+    if prow and all(r.get("value_sek") is not None and cost.get(r["ticker"]) for r in prow):
+        tv = sum(r["value_sek"] for r in prow)
+        tc = sum(cost[r["ticker"]] for r in prow)
+        pl = {"stocks_value_sek": round(tv, 2), "cost_sek": round(tc, 2), "pl_sek": round(tv - tc, 2),
+              "pl_pct": round((tv / tc - 1) * 100, 2), "cash_sek": p.get("cash_sek") or 0.0}
+
+    path: list[dict] = []
+    dep = p.get("monthly_deposit_sek")
+    if dep and total:
+        ranked = sorted((r for r in prow if r.get("value_sek")), key=lambda r: -r["value_sek"])
+        for k, r in enumerate(ranked):
+            w, target = r["value_sek"] / total * 100, float(r.get("max_weight") or 10)
+            if w <= target:
+                continue
+            levels = [lv for lv in ((50.0, 25.0) if k == 0 else ()) if target < lv < w] + [target]
+            for lv in levels:
+                path.append({"ticker": r["ticker"], "name": r["name"], "level_pct": lv,
+                             "months": round(max(0.0, (r["value_sek"] / (lv / 100) - total) / dep), 1)})
+    return week_sek, pl, path
 
 
 def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = None,
@@ -716,9 +786,11 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
                      "over_max": bool(w is not None and i.get("max_weight") and w > i["max_weight"])})
     vd = pct_diff(value.get("vibe_trading"), value.get("eodhd"))
     pstatus = grade(vd, VALUE_OK, VALUE_WARN) if vd is not None else "warn" if total is None else "info"
+    week_sek, pl, deposit_path = _week_pl_deposits(p, prow, chosen_px, week, total)
     portfolio = {"value_sek": value, "chosen": chosen_key if total is not None else None, "total_sek": total,
                  "diff_pct": round(vd, 2) if vd is not None else None, "cash_sek": p.get("cash_sek") or 0.0,
-                 "rows": prow, "status": pstatus, "missing_qty": no_qty}
+                 "rows": prow, "status": pstatus, "missing_qty": no_qty, "week_sek": week_sek, "pl": pl,
+                 "monthly_deposit_sek": p.get("monthly_deposit_sek"), "deposit_path": deposit_path}
     if no_qty:
         issues.append(f"ADVARSEL porteføljeværdi: antal mangler for {', '.join(no_qty)} i VT_PORTFOLIO, så vægtene "
                       "ikke kan beregnes (opdatér beholdningen i Vibetrad og kopiér VT_PORTFOLIO igen)")
@@ -786,7 +858,7 @@ def verified_reports(dc: dict | None) -> dict[str, str]:
     return {e["ticker"]: e["verified"] for e in (dc or {}).get("earnings", []) if e.get("verified")}
 
 
-def agent_brief(dc: dict | None, limit: int = 3800) -> str:
+def agent_brief(dc: dict | None, limit: int = 4800) -> str:
     """Kompakt facit (markdown), som alle agenter får i deres instruks."""
     if not dc:
         return ""
@@ -798,7 +870,7 @@ def agent_brief(dc: dict | None, limit: int = 3800) -> str:
     lines = [f"## Vibetrad datatjek {dmy(dc['ref_date'])}: {dc['status']}",
              f"Kilder krydstjekket: {' og '.join(srcs) or 'ingen'}. Brug tallene herunder som facit for kurser, vægte og "
              "datoer. Hvis dine egne værktøjer giver mere end 1 % afvigelse, så sig det og forklar hvorfor.",
-             "", "| Papir | Lukkekurs | Uge | Værdi SEK | Vægt | Næste regnskab |", "|---|---|---|---|---|---|"]
+             "", "| Papir | Lukkekurs | Uge (lokal / SEK) | Værdi SEK | Vægt | Næste regnskab |", "|---|---|---|---|---|---|"]
     by_t = {r["ticker"]: r for r in dc.get("portfolio", {}).get("rows", [])}
     er = {e["ticker"]: e for e in dc.get("earnings", [])}
     lim = "langsigtet mål" if dc.get("weight_policy") == "target" else "maks"
@@ -809,14 +881,33 @@ def agent_brief(dc: dict | None, limit: int = 3800) -> str:
         when = {"AfterMarket": " efter lukning", "BeforeMarket": " før åbning"}.get(e.get("eodhd_when") or "", "")
         rep = (dmy(e.get("verified")) + when + (f" ({e.get('agree')} kilder)" if e.get("agree") else "")) if e.get("verified") else "–"
         w = (f"{_nf(pr.get('weight_pct'), 1)} %" + (f" ({lim} {pr['max_weight']:g} %)" if pr.get("over_max") else "")) if pr.get("weight_pct") is not None else "–"
+        wk = _sp(src.get("week_pct")) + (f" / {_sp(pr['week_pct_sek'])}" if pr.get("week_pct_sek") is not None else "")
         lines.append(f"| {r['name']} ({r['ticker']}) | {_nf(src.get('close'))} {eo.currency_of(r['ticker']) or ''} "
-                     f"({dmy(src.get('date'))}) | {_sp(src.get('week_pct'))} | {_nf(pr.get('value_sek'), 0)} | {w} | {rep} |")
+                     f"({dmy(src.get('date'))}) | {wk} | {_nf(pr.get('value_sek'), 0)} | {w} | {rep} |")
     fx = " · ".join(f"{f['pair'][:3]}/{f['pair'][3:]} {_nf((f.get('eodhd') or f.get('vt') or {}).get('close'), 4)}"
                     for f in dc.get("fx", []))
     pf = dc.get("portfolio", {})
     lines.append("")
     lines.append(f"{fx} · Kontant {_nf(pf.get('cash_sek'), 0)} SEK · I alt {_nf(pf.get('total_sek'), 0)} SEK "
                  f"(markedsværdi, {('EODHD' if pf.get('chosen') == 'eodhd' else 'Vibe-Trading')}).")
+    ws = pf.get("week_sek")
+    if ws:
+        fxs = ", ".join(f"{c}/SEK {_nf(v['from'], 4)} ({dmy(v['from_date'])}) → {_nf(v['to'], 4)} ({dmy(v['to_date'])})"
+                        for c, v in ws.get("fx", {}).items())
+        lines.append(f"**Ugen i SEK inkl. valuta:** {_sp(ws['pct'])} ({_nf(ws['start_sek'], 0)} → {_nf(ws['end_sek'], 0)} SEK "
+                     f"inkl. kontant; heraf valuta {'+' if ws['fx_pp'] > 0 else ''}{_nf(ws['fx_pp'], 1)} pp"
+                     f"{': ' + fxs if fxs else ''}). Brug dette tal for "
+                     "porteføljens afkast i SEK; ugeafkast i lokal valuta er noget andet.")
+    pl = pf.get("pl")
+    if pl:
+        lines.append(f"**Resultat siden køb (kun aktier):** {_nf(pl['pl_sek'], 0)} SEK ({_sp(pl['pl_pct'], 2)}) af "
+                     f"{_nf(pl['cost_sek'], 0)} SEK anskaffet. Kontanten ({_nf(pl['cash_sek'], 0)} SEK) er ikke en del af resultatet.")
+    if pf.get("monthly_deposit_sek") and pf.get("deposit_path"):
+        steps: dict[str, list[str]] = {}
+        for d in pf["deposit_path"]:
+            steps.setdefault(d["name"], []).append(f"under {_nf(d['level_pct'], 0)} % om {_nf(d['months'], 1)} md")
+        lines.append(f"**Indskud:** {_nf(pf['monthly_deposit_sek'], 0)} SEK om måneden, uændrede kurser og ingen salg: "
+                     + "; ".join(f"{n} {', '.join(v)}" for n, v in steps.items()) + ".")
     for s in dc.get("short_history", []):
         w = (by_t.get(s["ticker"]) or {}).get("weight_pct")
         lines.append(f"**Kort historik:** {s['name']} ({s['ticker']}) har kun {'ca. ' if s.get('approx') else ''}"

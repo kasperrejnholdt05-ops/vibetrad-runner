@@ -28,6 +28,7 @@ import datetime as dt
 import gzip
 import json
 import os
+import re
 import secrets
 import sys
 import tempfile
@@ -117,10 +118,22 @@ FRED_GUIDANCE = """
 ## Macro data (FRED, Vibetrad)
 `get_macro_series` returns official US macro series from the St. Louis Fed. Useful series_id values: DGS10 and DGS2
 (Treasury yields), T10Y2Y (curve), DFF (effective fed funds), VIXCLS (equity volatility), BAMLH0A0HYM2 (US high-yield
-credit spread), DEXSDUS (SEK per USD, weekly release), CPIAUCSL (CPI), UNRATE (unemployment). Always pass start_date
+credit spread), DEXSDUS (SEK per USD, weekly noon-NY release: macro context only - never compare it with or use it
+instead of the facit USD/SEK rate), CPIAUCSL (CPI), UNRATE (unemployment). Always pass start_date
 (e.g. two years back) to keep the output small. FRED is US data: for Swedish or German rates use get_eodhd_data
 (SE10Y.GBOND, DE10Y.GBOND). The "Makro (FRED)" table in your instructions is this run's reference snapshot.
 """
+SYMBOL_GUIDANCE = """
+
+## Symbols (Vibetrad)
+Always write US stocks and ETFs with the .US suffix (ACWI.US, IEF.US, GLD.US, VNQ.US, SPCX.US). Without a suffix
+Vibe-Trading treats the symbol as a China A-share and the call fails ("no price data"). Nordic listings: NOVO-B.CO,
+INVE-B.ST. If a tool call fails or returns no data, say so in the report and never present a number from that call.
+Never state a brokerage fee (courtage) or FX fee unless it is given in your instructions.
+"""
+# Agenter med disse værktøjer henter kurser og får symbol-instruksen.
+SYMBOL_TOOLS = {"get_market_data", "portfolio_risk_xray", "backtest", "technical_indicators", "quantlib_call", "etf_holdings",
+                "get_eodhd_data"}
 EXTRA_PROMPT = {"portfolio_review_board": {"chief_investment_officer": """
 
 ## Faktatjek før aflevering (Vibetrad)
@@ -130,6 +143,17 @@ line "Faktatjek: PASS" or "Faktatjek: FAIL – <what was wrong and how you corre
 (e.g. whether an order 'should have filled') as a fact; label it as an inference and say what would confirm it.
 Compare your prices, weights and dates with the "Vibetrad datatjek" table in your instructions (cross-checked between
 Vibe-Trading and EODHD) and add a short section "Datakvalitet" saying which data gaps or disagreements matter.
+
+## Syntese af ugens teams (Vibetrad)
+Your goal lists the other teams' conclusions. Use all of them:
+- Add a table "Uenigheder mellem teams" (team | deres anbefaling | din beslutning | hvorfor) for every point where a team
+  recommends something different from you (selling vs holding, timing, target weights, an order). Write "Ingen" only if
+  no team disagrees. Never write that all teams agree without checking each team's recommendation.
+- Reproduce the risk committee's loss scenarios in SEK (one row per scenario) and use them in the risk budget.
+- For every main decision add one line "Jeg tager fejl, hvis …" with a measurable condition.
+- Transition plan: use the monthly deposit in the portfolio text and the "Indskud" line in the datatjek facit. For each
+  step state how many months of deposits it takes at unchanged prices and whether it needs any sale.
+- If a team or agent delivered no report, say so in "Datakvalitet" instead of relying on its conclusions.
 """}}
 
 # Rækkefølge i rapporten og som input til CIO'en (CIO kører altid sidst).
@@ -157,8 +181,9 @@ TRANSITION_GOAL = (
     "Gør porteføljen mere robust. Langsigtet mål: højst 10 % pr. enkeltaktie, men nå det gradvist: "
     "foreslå en overgangsplan med trin og tidshorisont (fx nye indskud til en bred kerne og trinvise "
     "justeringer) i stedet for at sælge ned til 10 % med det samme. Mindre korrelation mellem positionerne "
-    "og ingen unødige handler. Afslut med målvægte for hvert trin, hvad nye indskud bør gå til, og hvilke "
-    "begivenheder (regnskaber, lock-up-udløb, store kursudsving) der bør udløse en revurdering."
+    "og ingen unødige handler. Afslut med målvægte for hvert trin, hvad nye indskud bør gå til, hvor mange "
+    "måneders indskud hvert trin kræver ved uændrede kurser, og hvilke begivenheder (regnskaber, lock-up-udløb, "
+    "store kursudsving) der bør udløse en revurdering."
 )
 WEIGHT_POLICIES = ("limit", "target")
 LANG_SUFFIX = (
@@ -308,6 +333,10 @@ def load_portfolio(raw: str | None) -> dict:
     p.setdefault("account", "ISK Nordnet")
     p.setdefault("currency", "SEK")
     p["cash_sek"] = float(p.get("cash_sek") or 0)
+    dep = p.get("monthly_deposit_sek")
+    p["monthly_deposit_sek"] = float(dep) if isinstance(dep, (int, float)) and not isinstance(dep, bool) and 0 < dep < 10_000_000 else None
+    cc = re.sub(r"[^\w .,/()+-]", "", str(p.get("courtage_class") or "")).strip()[:40]
+    p["courtage_class"] = cc or None
     p.setdefault("watchlist", [])
     p.setdefault("next_reports", {})
     return p
@@ -340,6 +369,14 @@ def portfolio_text(p: dict) -> str:
     if p.get("watchlist"):
         wl = "; ".join(f"{w.get('ticker')}: {w.get('note', '')}".strip(": ") for w in p["watchlist"] if isinstance(w, dict))
         lines.append(f"Overvågning/åbne ordrer: {wl}")
+    if p.get("monthly_deposit_sek"):
+        lines.append(f"Månedligt indskud: {p['monthly_deposit_sek']:,.0f} SEK. Nye indskud kan sprede porteføljen uden salg; "
+                     "regn i måneder ved uændrede kurser.".replace(",", " "))
+    else:
+        lines.append("Månedligt indskud: ikke oplyst. Antag ikke et beløb; sig, hvad planen kræver pr. måned.")
+    broker = f"Nordnet, kurtageklasse {p['courtage_class']}" if p.get("courtage_class") else "Nordnet, kurtageklasse ikke oplyst"
+    lines.append(f"Kurtage: {broker}. Satsen og valutapåslaget kendes ikke her: angiv ingen kurtagesats, "
+                 "men skriv 'kurtage og valutaveksling efter din Nordnet-klasse'.")
     if p.get("framework"):
         lines.append(f"Investeringsramme: {p['framework']}")
     return "\n".join(lines)
@@ -421,6 +458,11 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
     weights = cost_weights(p)
     wtxt = ", ".join(f"{w['ticker']} {w['weight_cost_pct']:g} %" for w in weights if w["weight_cost_pct"] is not None)
     iso_week = dt.date.fromisoformat(week["from"]).isocalendar().week
+    dep = p.get("monthly_deposit_sek")
+    new_money = (f"nye indskud (ca. {dep:,.0f} SEK om måneden) og kontanten".replace(",", " ") if dep
+                 else "nye indskud og kontanten")
+    scope = (f"Fordel kun {new_money}: sælg ikke de eksisterende aktier, og fordel ikke hele porteføljens værdi. "
+             "Angiv ingen kurtagesats. ")
 
     plan: list[dict] = [{
         "preset": "risk_committee", "reason": "Fast ugentligt risikoudvalg (spillebog)",
@@ -450,7 +492,7 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
             1: {"preset": "etf_allocation_desk", "reason": "Månedens 1. lørdag: ETF-allokering (kerne og spredning)",
                 "vars": {"risk_profile": "moderat, langsigtet, ingen gearing, svensk ISK i SEK hos Nordnet",
                          "market": (f"globale ETF'er, der kan købes via Nordnet. Find dem, der sænker korrelationen mest "
-                                    f"til en portefølje med {wtxt}. Skriv på dansk, beløb i SEK.")}},
+                                    f"til en portefølje med {wtxt}. {scope}Skriv på dansk, beløb i SEK.")}},
             2: {"preset": "macro_rates_fx_desk", "reason": "Månedens 2. lørdag: makro, renter og USD/SEK",
                 "vars": {"goal": (f"Svensk investor med basisvaluta SEK og næsten al eksponering i amerikanske aktier ({wtxt}). "
                                   "Vurdér Fed/Riksbanken, USD/SEK-retning og om valutarisikoen bør afdækkes eller spredes. "
@@ -459,7 +501,7 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
             3: {"preset": "fund_selection_panel", "reason": "Månedens 3. lørdag: konkrete kernefonde til ISK",
                 "vars": {"fund_type": "globale indeksfonde og ETF'er, der kan købes på Nordnet ISK (globale, Europa, Norden, small cap, value)",
                          "goal": (f"Find 2–3 lavomkostnings-kernefonde, der sænker korrelationen til en portefølje med {wtxt}, "
-                                  "med omkostninger, tracking og risiko. Skriv på dansk, beløb i SEK.")}},
+                                  f"med omkostninger, tracking og risiko. {scope}Skriv på dansk, beløb i SEK.")}},
             4: {"preset": "value_investing_committee", "reason": f"Månedens 4. lørdag: værdikomité på {focus['name']}",
                 "vars": {"company": focus["ticker"], "market": f"{market_of(focus['ticker'])}. Skriv på dansk, beløb også i SEK."
                                    + (SPACEX_HINT if focus["ticker"].startswith("SPCX") else "")}},
@@ -525,16 +567,91 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
     return plan
 
 
-def cio_goal_with_inputs(base_goal: str, runs: list[dict], limit: int = 9000) -> str:
-    """Giv CIO'en de øvrige teams' konklusioner, så syntesen bygger på hele ugens arbejde."""
-    parts = []
-    for r in runs:
-        if r.get("status") == "completed" and r.get("final_report"):
-            parts.append(f"### {r.get('label', r['preset'])}\n{r['final_report'][:3000]}")
-    if not parts:
+# Afsnit i en teamrapport, som CIO'en især skal se (konklusioner og beslutninger), og afsnit den kan undvære.
+_DIGEST_T1 = re.compile(r"(executive summary|sammenfatning|resum|konklusion|conclusion|beslutning|decision|anbefaling|"
+                        r"recommendation|handlingspunkt|action item|samlet|summary|endelig|final|bottom line|verdict)", re.I)
+_DIGEST_T2 = re.compile(r"(overgang|transition|målvægt|target|scenari|risikooversigt|risk overview|risikobudget|risk budget|"
+                        r"trade|sizing|position|integr|uenig|disagree|katalysator|catalyst|begivenhed|trigger|plan|stop|hedge)", re.I)
+_DIGEST_SKIP = re.compile(r"(datakilde|kilder\b|forbehold|metode|backtest-note|reproducer|data sources|sources|appendix|bilag|"
+                          r"methodology)", re.I)
+_MD_HEADING = re.compile(r"^#{1,4}\s+\S.*$", re.M)
+
+
+def report_digest(text: str | None, budget: int) -> str:
+    """Det vigtigste fra en teamrapport inden for ``budget`` tegn.
+
+    Indledningen og afsnit med konklusioner og beslutninger først (de står ofte sidst), derefter
+    planer, scenarier og risikobudget; kilder og forbehold til sidst. Afsnittene bevarer rækkefølgen.
+    Uden overskrifter: begyndelsen og slutningen af rapporten.
+    """
+    text = (text or "").strip()
+    if len(text) <= budget:
+        return text
+    marks = [m.start() for m in _MD_HEADING.finditer(text)]
+    if not marks or len(marks) < 2:
+        head = text[: budget // 3]
+        tail = text[-(budget - len(head) - 8):]
+        return f"{head} …\n[…]\n… {tail}"
+    if marks[0] != 0:
+        marks = [0] + marks
+    secs = [text[a:b].strip() for a, b in zip(marks, marks[1:] + [len(text)])]
+    head, rest = secs[0], secs[1:]
+    titles = [sec.split("\n", 1)[0] for sec in rest]
+    t1 = [i for i, t in enumerate(titles) if _DIGEST_T1.search(t) and not _DIGEST_SKIP.search(t)]
+    t2 = [i for i, t in enumerate(titles) if i not in t1 and _DIGEST_T2.search(t) and not _DIGEST_SKIP.search(t)]
+    t3 = [i for i, t in enumerate(titles) if i not in t1 and i not in t2 and not _DIGEST_SKIP.search(t)]
+    room = budget - 20
+    head = head if len(head) <= max(300, room // 6) else head[: max(300, room // 6)].rsplit(" ", 1)[0] + " …"
+    room -= len(head) + 2
+    take: dict[int, str] = {}
+    cap = max(500, room // max(1, len(t1) + len(t2)))
+
+    def cut(sec: str, n: int) -> str:
+        return sec if n >= len(sec) else sec[:n].rsplit(" ", 1)[0] + " …"
+
+    for i in t1 + t2:  # første runde: alle vigtige afsnit får en lige stor bid
+        if room < 120:
+            break
+        take[i] = cut(rest[i], min(cap, room))
+        room -= len(take[i]) + 2
+    for i in t1 + t2:  # anden runde: resten af pladsen til afkortede konklusioner og planer
+        if room < 120:
+            break
+        if i in take and len(take[i]) < len(rest[i]):
+            piece = cut(rest[i], len(take[i]) + room)
+            room -= len(piece) - len(take[i])
+            take[i] = piece
+    for i in t3:  # tredje runde: øvrige afsnit, hvis der er plads tilbage
+        if room < 120:
+            break
+        take[i] = cut(rest[i], room)
+        room -= len(take[i]) + 2
+    body = "\n\n".join(take[i] for i in sorted(take))
+    return f"{head}\n\n{body}".strip()
+
+
+def cio_goal_with_inputs(base_goal: str, runs: list[dict], limit: int = 16000) -> str:
+    """Giv CIO'en alle øvrige teams' konklusioner, så syntesen bygger på hele ugens arbejde.
+
+    Hvert team får lige stor plads, og pladsen bruges på konklusioner og beslutninger (ikke indledningen).
+    Teams uden rapport nævnes, så CIO'en ikke tror, at de er enige.
+    """
+    done = [r for r in runs if r.get("status") == "completed" and r.get("final_report")]
+    missing = [r for r in runs if r not in done]
+    if not done and not missing:
         return base_goal
-    extra = "\n\nKonklusioner fra ugens øvrige Vibe-Trading-teams (brug dem i syntesen, og sig hvor du er uenig):\n" + "\n\n".join(parts)
-    return base_goal + extra[:limit]
+    intro = "\n\nKonklusioner fra ugens øvrige Vibe-Trading-teams (brug dem alle i syntesen, og sig hvor du er uenig):\n"
+    notes = [f"### {r.get('label', r['preset'])}: ingen rapport ({r.get('status')}"
+             + (f": {r['skip_reason']}" if r.get("skip_reason") else "") + ")" for r in missing]
+    room = limit - len(intro) - sum(len(n) + 2 for n in notes)
+    share = max(800, room // max(1, len(done)))
+    parts = []
+    for r in done:
+        head = f"### {r.get('label', r['preset'])}\n"
+        no_rep = [t.get("role") for t in r.get("tasks", []) if t.get("report") in ("empty", "plan_only")]
+        flag = f"(Agenter uden rapport i teamet: {', '.join(no_rep)})\n" if no_rep else ""
+        parts.append(head + flag + report_digest(r["final_report"], share - len(head) - len(flag)))
+    return base_goal + intro + "\n\n".join(parts + notes)
 
 
 # Værktøjer, der kun kan bruges med en nøgle. Uden nøglen tilføjes de ikke (så agenterne ikke lover data, de ikke kan hente).
@@ -598,6 +715,9 @@ def prepare_shellfree_presets(dst: Path, src: Path | None = None, brief: str = "
                 touched = True
             if "get_macro_series" in (agent.get("tools") or []):
                 agent["system_prompt"] = str(agent.get("system_prompt", "")).rstrip() + FRED_GUIDANCE
+                touched = True
+            if SYMBOL_TOOLS & set(agent.get("tools") or []):
+                agent["system_prompt"] = str(agent.get("system_prompt", "")).rstrip() + SYMBOL_GUIDANCE
                 touched = True
             if brief:
                 agent["system_prompt"] = str(agent.get("system_prompt", "")).rstrip() + "\n\n" + brief.strip() + "\n"
@@ -693,6 +813,22 @@ def _cap(text: str | None, n: int) -> str | None:
     return text if len(text) <= n else text[:n] + f"\n\n[… afkortet, {len(text) - n} tegn udeladt]"
 
 
+_PLAN_MARKERS = re.compile(r"\b(executing|i will|i'll|let me|next,? i|now i|starting with|jeg vil|jeg starter|"
+                           r"nu henter|planen er|først henter)\b", re.I)
+_RESULT_MARKERS = re.compile(r"(konklusion|conclusion|resultat|result|anbefal|recommend|vurdering|assessment|"
+                             r"\d+[.,]\d+ ?%)", re.I)
+
+
+def classify_report(summary: str | None) -> str:
+    """'ok', 'empty' (ingen tekst) eller 'plan_only' (agenten beskrev kun, hvad den ville gøre)."""
+    text = (summary or "").strip()
+    if not text or text.lower().strip("() ") in ("no summary", "ingen opsummering", "none"):
+        return "empty"
+    if len(text) < 3000 and _PLAN_MARKERS.search(text) and len(_RESULT_MARKERS.findall(text)) < 3:
+        return "plan_only"
+    return "ok"
+
+
 def summarize_run(run: Any, preset: str, reason: str, started: dt.datetime, duration_s: float,
                   *, price_in: float, price_out: float, report_cap: int = 60_000, task_cap: int = 16_000) -> dict:
     roles = {a.id: getattr(a, "role", a.id) for a in (getattr(run, "agents", None) or [])}
@@ -703,6 +839,7 @@ def summarize_run(run: Any, preset: str, reason: str, started: dt.datetime, dura
         tasks.append({
             "id": t.id, "agent_id": t.agent_id, "role": roles.get(t.agent_id, t.agent_id),
             "status": _status(t.status), "summary": _cap(t.summary, task_cap), "error": _cap(t.error, 2000),
+            "report": classify_report(t.summary) if _status(t.status) == "completed" else None,
             "iterations": int(getattr(t, "worker_iterations", 0) or 0),
             "started_at": getattr(t, "started_at", None), "completed_at": getattr(t, "completed_at", None),
         })
@@ -719,6 +856,7 @@ def summarize_run(run: Any, preset: str, reason: str, started: dt.datetime, dura
         "est_cost_usd": round(tin / 1e6 * price_in + tout / 1e6 * price_out, 2),
         "final_report": _cap(getattr(run, "final_report", None), report_cap),
         "tasks": tasks,
+        "agents_without_report": [t["role"] for t in tasks if t["report"] in ("empty", "plan_only")],
     }
 
 
@@ -833,16 +971,18 @@ def set_output(**kv: Any) -> None:
 class FakeRuntime:
     """Efterligner SwarmRuntime/SwarmStore uden LLM-kald (bruges af --dry-run og tests)."""
 
-    def __init__(self, fail: Iterable[str] = ()):
+    def __init__(self, fail: Iterable[str] = (), empty: Iterable[str] = ()):
         self.fail = set(fail)
+        self.empty = set(empty)  # presets, hvor agent 2 ikke leverer en rapport
         self.runs: dict[str, Any] = {}
 
     def start_run(self, preset: str, user_vars: dict, include_shell_tools: bool = False) -> Any:
         rid = f"dry-{preset}-{len(self.runs) + 1}"
         agents = [SimpleNamespace(id=f"{preset}_a{i}", role=f"Analytiker {i}") for i in (1, 2)]
         ok = preset not in self.fail
+        empty = preset in self.empty
         tasks = [SimpleNamespace(id=f"task-{i}", agent_id=a.id, status="completed" if ok else "failed",
-                                 summary=f"Tørkørsel: {a.role} for {preset}." if ok else None,
+                                 summary=(None if empty and i == 2 else f"Tørkørsel: {a.role} for {preset}.") if ok else None,
                                  error=None if ok else "Simuleret fejl", worker_iterations=3,
                                  started_at=None, completed_at=None) for i, a in enumerate(agents, 1)]
         run = SimpleNamespace(id=rid, status="completed" if ok else "failed", agents=agents, tasks=tasks,
@@ -862,7 +1002,8 @@ class FakeRuntime:
 
 def make_runtime(dry: bool) -> tuple[Any, Any, str]:
     if dry:
-        fake = FakeRuntime(fail=filter(None, os.environ.get("VT_DRY_FAIL", "").split(",")))
+        fake = FakeRuntime(fail=filter(None, os.environ.get("VT_DRY_FAIL", "").split(",")),
+                           empty=filter(None, os.environ.get("VT_DRY_EMPTY", "").split(",")))
         return fake, fake, "dry-run"
     from importlib.metadata import version
 
@@ -941,7 +1082,7 @@ def main(argv: list[str] | None = None) -> int:
     iterations = int(os.environ.get("VT_PBKDF2_ITER", str(PBKDF2_ITER)))
 
     period_start = budget_period_start(ref)
-    spent_before = 0.0 if args.dry_run else month_spent(results, ref)
+    spent_before = month_spent(results, ref)  # også i en tørkørsel, så budgettet kan tjekkes gratis
     budget = max(0.0, min(run_budget, month_budget - spent_before))
     con.say(f"Budget: {budget:.2f} USD til denne kørsel (brugt siden {dmy(period_start)}: "
             f"{spent_before:.2f} af {month_budget:.0f} USD)")
@@ -1077,7 +1218,9 @@ def main(argv: list[str] | None = None) -> int:
                              "duration_s": round(time.monotonic() - m0)})
         r = runs[-1]
         used_usd += float(r.get("est_cost_usd") or 0)
-        con.say(f"· {label}: {r['status']} · {r.get('duration_s', 0)} s · {r.get('tokens_in', 0) + r.get('tokens_out', 0):,} tokens · {r.get('est_cost_usd', 0):.2f} USD".replace(",", " "))
+        nr = r.get("agents_without_report") or []
+        miss = f" · {len(nr)} af {len(r.get('tasks') or [])} agenter uden rapport: {', '.join(nr)}" if nr else ""
+        con.say(f"· {label}: {r['status']} · {r.get('duration_s', 0)} s · {r.get('tokens_in', 0) + r.get('tokens_out', 0):,} tokens · {r.get('est_cost_usd', 0):.2f} USD".replace(",", " ") + miss)
 
     silence_rest(log_path)  # herfra når intet fra Vibe-Tradings tråde GitHub-loggen
     done = [r for r in runs if r["status"] == "completed"]
