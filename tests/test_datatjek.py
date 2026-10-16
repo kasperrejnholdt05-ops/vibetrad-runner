@@ -175,7 +175,7 @@ def test_brief_and_cio_instruction():
     b = dtj.agent_brief(dc)
     assert b.startswith("## Vibetrad datatjek 15/10/2026: PASS")
     assert "| SpaceX (SPCX.US) |" in b and "(maks 10 %)" in b and "03/11/2026 efter lukning (3 kilder)" in b and "| Novo Nordisk A/S (NOVO-B.CO) |" in b
-    assert "USD/SEK" in b and "lock-up" in b and len(b) <= 4800
+    assert "USD/SEK" in b and "lock-up" in b and len(b) <= 5600
     assert "**Ugen i SEK inkl. valuta:**" in b and "**Resultat siden køb (kun aktier):**" in b
     assert "| Uge (lokal / SEK) |" in b and "**Indskud:**" not in b  # intet indskud oplyst i P
     assert "Datakvalitet" in dtj.cio_instruction(dc) and dtj.agent_brief(None) == ""
@@ -396,3 +396,43 @@ def test_fx_noise_below_half_percent_and_explained_notes(bump, status):
         assert "(Vibe-Trading 10," in note and ", EODHD 10," in note
         assert "kilderne lukker valutadøgnet på forskellige tidspunkter" in note and "DEXSDUS" in note
         assert any(s.startswith("ADVARSEL USDSEK") for s in dc["issues"])
+
+
+def test_market_cap_is_whole_company_and_full_brief_fits():
+    """Hele porteføljen (4 aktier, overvågning, indskud, kort historik, begivenheder og afvigelser) skal kunne stå i
+    facit uden at 'Afvigelser' og markedsværdien skæres væk, og markedsværdien skal være hele selskabets."""
+    base = dict(BASE, **{"NVDA.US": 180.0, "AVGO.US": 340.0})
+    full = rw.load_portfolio("""{"account":"ISK Nordnet","currency":"SEK","monthly_deposit_sek":20000,
+      "courtage_class":"Jubileum","weight_policy":"target","holdings":[
+      {"ticker":"SPCX.US","name":"SpaceX","qty":17,"cost_sek":26743,"max_weight":10},
+      {"ticker":"GOOGL.US","name":"Alphabet A","qty":2,"cost_sek":7046,"max_weight":10},
+      {"ticker":"NVDA.US","name":"NVIDIA","qty":2,"cost_sek":4494,"max_weight":10},
+      {"ticker":"AVGO.US","name":"Broadcom","qty":1,"cost_sek":3507,"max_weight":10}],
+      "cash_sek":1342,"watchlist":[{"ticker":"NOVO-B.CO","note":"aaben limitordre 3 stk, regnskab 04/11/2026"}],
+      "next_reports":{"GOOGL.US":"2026-10-28","SPCX.US":"2026-11-03","NVDA.US":"2026-11-18","AVGO.US":"2026-12-09"}}""")
+    px = {c: {"rows": [(d, round(b * (1 + 0.002 * i), 6)) for i, d in enumerate(DAYS)], "source": "yahoo", "currency": None}
+          for c, b in base.items()}
+    prof = {"GOOGL.US": {"name": "Alphabet Inc Class A", "currency": "USD", "market_cap": 4.271e12},
+            "NVDA.US": {"name": "NVIDIA Corporation", "currency": "USD"},
+            "AVGO.US": {"name": "Broadcom Inc", "currency": "USD", "market_cap": 1.62e12}}
+    vt_prof = {"NVDA.US": {"name": "NVIDIA Corporation", "currency": "USD", "market_cap": 4.4e12},
+               "GOOGL.US": {"name": "Alphabet Inc.", "currency": "USD", "market_cap": 4.26e12}}
+    vt = Fake("Vibe-Trading", px, vt_prof)
+    eod = Fake("EODHD", {k: dict(v, source="eodhd") for k, v in px.items()}, prof)
+    dc = dtj.run(full, WEEK, REF, vt=vt, eod=eod)
+    line = next(x for x in dtj.agent_brief(dc, limit=99999).splitlines() if x.startswith("**Markedsværdi"))
+    assert "GOOGL.US 4 271 mia. USD (EODHD)" in line  # hele selskabet fra EODHD, ikke kun A-aktierne
+    assert "NVDA.US 4 400 mia. USD (Vibe-Trading)" in line  # reserve, når EODHD mangler tallet
+    assert "aldrig markedsværdien ud fra én aktieklasses" in line
+    # Værst tænkelige længde: seks lange begivenheder og seks lange afvigelser oveni
+    dc["events"] = [{"ticker": "SPCX.US", "kind": "dividend", "date": "2026-12-01", "text": "Begivenhed " + "x" * 140}] * 6
+    dc["issues"] = ["ADVARSEL " + "y" * 180] * 6
+    dc["short_history"] = [{"ticker": "SPCX.US", "name": "SpaceX", "trading_days": 87, "ipo_date": "2026-06-12",
+                            "max_drawdown_pct": -49.0}]
+    b = dtj.agent_brief(dc)
+    assert len(b) <= 5600 and "[… afkortet]" not in b
+    for must in ("**Ugen i SEK inkl. valuta:**", "**Resultat siden køb (kun aktier):**", "**Indskud:** 20 000 SEK",
+                 "**Markedsværdi", "**Kort historik:**", "Afvigelser: ADVARSEL", "| Broadcom (AVGO.US) |"):
+        assert must in b, must
+    cut = dtj.agent_brief(dc, limit=600)
+    assert cut.endswith("[… afkortet]") and "\n[… afkortet]" in cut and len(cut) <= 600 + 20

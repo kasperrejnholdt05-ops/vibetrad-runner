@@ -734,6 +734,7 @@ def test_symbol_guidance_for_agents_that_fetch_prices(tmp_path):
     (writer,) = yaml.safe_load((tmp_path / "dst" / "custom_desk.yaml").read_text())["agents"]
     assert "ACWI.US" in screener["system_prompt"] and "China A-share" in screener["system_prompt"]
     assert "never present a number from that call" in screener["system_prompt"]
+    assert "share class" in screener["system_prompt"] and "whole-company figure" in screener["system_prompt"]
     assert "ACWI.US" not in writer["system_prompt"]
 
 

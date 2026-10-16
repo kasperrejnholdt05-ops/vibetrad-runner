@@ -858,7 +858,7 @@ def verified_reports(dc: dict | None) -> dict[str, str]:
     return {e["ticker"]: e["verified"] for e in (dc or {}).get("earnings", []) if e.get("verified")}
 
 
-def agent_brief(dc: dict | None, limit: int = 4800) -> str:
+def agent_brief(dc: dict | None, limit: int = 5600) -> str:
     """Kompakt facit (markdown), som alle agenter får i deres instruks."""
     if not dc:
         return ""
@@ -879,7 +879,7 @@ def agent_brief(dc: dict | None, limit: int = 4800) -> str:
         pr = by_t.get(r["ticker"], {})
         e = er.get(r["ticker"]) or {}
         when = {"AfterMarket": " efter lukning", "BeforeMarket": " før åbning"}.get(e.get("eodhd_when") or "", "")
-        rep = (dmy(e.get("verified")) + when + (f" ({e.get('agree')} kilder)" if e.get("agree") else "")) if e.get("verified") else "–"
+        rep = (dmy(e.get("verified")) + when + (f" ({e.get('agree')} {'kilde' if e.get('agree') == 1 else 'kilder'})" if e.get("agree") else "")) if e.get("verified") else "–"
         w = (f"{_nf(pr.get('weight_pct'), 1)} %" + (f" ({lim} {pr['max_weight']:g} %)" if pr.get("over_max") else "")) if pr.get("weight_pct") is not None else "–"
         wk = _sp(src.get("week_pct")) + (f" / {_sp(pr['week_pct_sek'])}" if pr.get("week_pct_sek") is not None else "")
         lines.append(f"| {r['name']} ({r['ticker']}) | {_nf(src.get('close'))} {eo.currency_of(r['ticker']) or ''} "
@@ -908,6 +908,17 @@ def agent_brief(dc: dict | None, limit: int = 4800) -> str:
             steps.setdefault(d["name"], []).append(f"under {_nf(d['level_pct'], 0)} % om {_nf(d['months'], 1)} md")
         lines.append(f"**Indskud:** {_nf(pf['monthly_deposit_sek'], 0)} SEK om måneden, uændrede kurser og ingen salg: "
                      + "; ".join(f"{n} {', '.join(v)}" for n, v in steps.items()) + ".")
+    mcaps = []
+    for f in dc.get("fundamentals", []):
+        # EODHD først (hele selskabet); Vibe-Trading (Yahoo) som reserve
+        src, mc = next(((s, (f.get(k) or {}).get("market_cap")) for s, k in (("EODHD", "eodhd"), ("Vibe-Trading", "vt"))
+                        if (f.get(k) or {}).get("market_cap")), (None, None))
+        if mc:
+            cur = eo.currency_of(f["ticker"]) or ""
+            mcaps.append(f"{f['ticker']} {_nf(mc / 1e9, 0)} mia.{' ' + cur if cur else ''} ({src})")
+    if mcaps:
+        lines.append("**Markedsværdi (hele selskabet, alle aktieklasser):** " + " · ".join(mcaps)
+                     + ". Brug disse tal, og regn aldrig markedsværdien ud fra én aktieklasses antal aktier.")
     for s in dc.get("short_history", []):
         w = (by_t.get(s["ticker"]) or {}).get("weight_pct")
         lines.append(f"**Kort historik:** {s['name']} ({s['ticker']}) har kun {'ca. ' if s.get('approx') else ''}"
@@ -924,7 +935,8 @@ def agent_brief(dc: dict | None, limit: int = 4800) -> str:
     lines.append("Nordiske/europæiske symboler (fx NOVO-B.CO, INVE-B.ST) kan hentes med get_market_data (EODHD-loader) "
                  "eller get_eodhd_data.")
     text = "\n".join(lines)
-    return text if len(text) <= limit else text[:limit] + "\n[… afkortet]"
+    # Afkort ved et linjeskift, så ingen linje (fx et tal) står halvt
+    return text if len(text) <= limit else text[:limit].rsplit("\n", 1)[0] + "\n[… afkortet]"
 
 
 def cio_instruction(dc: dict | None) -> str:
