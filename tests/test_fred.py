@@ -142,7 +142,7 @@ def test_status_line_and_brief_format():
     brief = fr.agent_brief(snap)
     assert brief.startswith("## Makro (FRED, St. Louis Fed) pr. 15/10/2026")
     assert "| US 10-årig statsrente (DGS10) | 4,12 % | 14/10/2026 | +0,12 pp |" in brief
-    assert "| USD/SEK (Fed H.10, middag i New York) (DEXSDUS) | 4,1200 SEK | 14/10/2026 | +0,1200 SEK |" in brief
+    assert "| USD/SEK (Fed H.10, ugentlig – kun makrokontekst, ikke til omregning) (DEXSDUS) | 4,1200 SEK | 14/10/2026 | +0,1200 SEK |" in brief
     assert "| VIX (forventet aktievolatilitet) (VIXCLS) | 4,12 | 14/10/2026 | +0,12 |" in brief
     assert len(brief) < 1500
 
