@@ -178,13 +178,48 @@ def test_report_digest_short_text_and_no_headings():
     assert d.startswith("START") and d.rstrip().endswith("SLUTKONKLUSION") and len(d) <= 1010
 
 
+# Mønstre fra testkørslerne 15/10 og 16/10 (vægte og symboler er ændret, så ingen rigtig portefølje står i repoet)
+PLAN_W42 = ("## Plan\n- **Load methodology:** `risk-analysis` and `volatility` skills.\n"
+            "- **Fetch price history:** weekly bars for AAA.US, BBB.US since the IPO (12/06/2026) through 15/10/2026.\n"
+            "- **Core risk engine:** `portfolio_risk_xray` with current weights (20,0 % AAA / 12,5 % BBB / 7,5 % CCC / "
+            "60,0 % DDD) for volatility, max drawdown, historical VaR/ES.\n"
+            "- **Tail-risk cross-check:** `quantlib_call` (`historical_var`, `historical_cvar` at 95 %/99 %).\n"
+            "- Write `report.md` in Danish with a Datakvalitet section.\n\nExecuting the data-gathering calls now.")
+NOT_REPORTS = {
+    "plan med vægte i %": PLAN_W42,
+    "dansk statusbesked": ("Jeg har indhentet de nødvendige prisdata (jf. facit-tabellen, 15/09–14/10/2026, samt USD/SEK 9,96). "
+                           "VaR/CVaR-delen bygger på det tilgængelige daglige datasæt og er markeret som et lille-stikprøve-"
+                           "estimat. Jeg færdiggør nu rapporten."),
+    "kort engelsk status": "USD/SEK = 9,974 (15/10/2026). Now let me get AAA and BBB indicators.",
+    "engelsk plan": ("I have good data now. Let me also get CCC and DDD for the same period, then USD/SEK, then write the "
+                     "full analysis script using quantlib functions."),
+    "simpel plan": ("Plan\nLoad methodology: risk skills.\nFetch price history for the holdings.\n"
+                    "Core risk engine: portfolio_risk_xray.\nExecuting the data-gathering calls now."),
+}
+REPORTS = {
+    "konklusion": "## Konklusion\nVaR 95 % er 4,30 %, ES 7,30 %, drawdown −34,7 %. Anbefaling: reducér gradvist. " * 3,
+    "tørkørsel": "Tørkørsel: Analytiker 1 for x.",
+    "plan-overskrift med vurdering": ("## Plan for overgangen\nTrin 1: nye indskud til kernen.\n## 2. Samlet vurdering\n"
+                                      "Koncentrationen er høj.\n\nJeg vil følge op efter regnskabet."),
+    "tabel": "Risikotal\n| Mål | Niveau |\n|---|---|\n| VaR | 4,3 % |\nLet me know.",
+    "fed konklusion": "**1. Konklusion:** Porteføljen er koncentreret. Jeg færdiggør nu rapporten.",
+}
+
+
+@pytest.mark.parametrize("name", sorted(NOT_REPORTS))
+def test_plans_and_status_messages_are_not_reports(name):
+    assert rw.classify_report(NOT_REPORTS[name]) == "plan_only", name
+
+
+@pytest.mark.parametrize("name", sorted(REPORTS))
+def test_real_reports_are_reports(name):
+    assert rw.classify_report(REPORTS[name]) == "ok", name
+
+
 def test_agents_without_report_are_flagged_for_log_and_cio():
-    plan_text = ("Plan\nLoad methodology: risk skills.\nFetch price history for the holdings.\n"
-                 "Core risk engine: portfolio_risk_xray.\nExecuting the data-gathering calls now.")
-    assert rw.classify_report(plan_text) == "plan_only"
+    plan_text = PLAN_W42
     assert rw.classify_report("(no summary)") == "empty" and rw.classify_report(None) == "empty"
-    real = "## Konklusion\nVaR 95 % er 4,30 %, ES 7,30 %, drawdown −34,7 %. Anbefaling: reducér gradvist. " * 3
-    assert rw.classify_report(real) == "ok" and rw.classify_report("Tørkørsel: Analytiker 1 for x.") == "ok"
+    real = REPORTS["konklusion"]
     agents = [SimpleNamespace(id=f"a{i}", role=r) for i, r in enumerate(("Head of Risk", "Risk Inspector", "Tail Risk Analyst"))]
     tasks = [SimpleNamespace(id=f"t{i}", agent_id=f"a{i}", status="completed", summary=txt, error=None, worker_iterations=5,
                              started_at=None, completed_at=None) for i, txt in enumerate((real, plan_text, None))]

@@ -815,10 +815,21 @@ def _cap(text: str | None, n: int) -> str | None:
     return text if len(text) <= n else text[:n] + f"\n\n[… afkortet, {len(text) - n} tegn udeladt]"
 
 
+# Agent uden rapport. Testkørslen 16/10 viste to mønstre, som en simpel optælling ikke fanger:
+#   1) en struktureret plan ("## Plan" + punkter med vægte i %) der slutter "Executing the data-gathering calls now."
+#   2) en kort statusbesked der slutter fremadrettet ("Jeg færdiggør nu rapporten.", "Now let me get …").
+# En rigtig rapport har en resultat-overskrift (konklusion, vurdering, anbefaling …) eller en tabel.
 _PLAN_MARKERS = re.compile(r"\b(executing|i will|i'll|let me|next,? i|now i|starting with|jeg vil|jeg starter|"
-                           r"nu henter|planen er|først henter)\b", re.I)
-_RESULT_MARKERS = re.compile(r"(konklusion|conclusion|resultat|result|anbefal|recommend|vurdering|assessment|"
-                             r"\d+[.,]\d+ ?%)", re.I)
+                           r"nu henter|planen er|først henter)(?![a-zæøå])", re.I)
+_RESULT_WORDS = re.compile(r"(konklusion|conclusion|anbefal|recommend|vurdering|assessment)", re.I)
+_FORWARD_TAIL = re.compile(r"\b(executing|now (?:i'?ll|i will|let me|i am going to)|let me|i'?ll now|i will now|i'?m now|"
+                           r"proceeding|starting (?:with|now)|then (?:write|run|compile)|next,? i|jeg færdiggør|"
+                           r"færdiggør nu|nu (?:henter|skriver|laver|går|beregner|kører)|jeg går (?:nu )?i gang|"
+                           r"jeg (?:skriver|henter|beregner|kører) nu|herefter (?:skriver|henter))(?![a-zæøå])", re.I)
+_RESULT_HEADING = re.compile(r"^[ \t]*(?:#{1,6}[ \t]*|\*\*)(?:\d+[.)][ \t]*)?[^\n]{0,40}?(konklusion|conclusion|"
+                             r"sammenfatning|resumé|summary|findings|anbefaling|recommendation|resultat|results|vurdering|"
+                             r"assessment|beslutning|decision|scenari)", re.I | re.M)
+_PLAN_HEADING = re.compile(r"[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*)?(plan|approach|fremgangsmåde|tilgang|metode)(?![a-zæøå])", re.I)
 
 
 def classify_report(summary: str | None) -> str:
@@ -826,7 +837,12 @@ def classify_report(summary: str | None) -> str:
     text = (summary or "").strip()
     if not text or text.lower().strip("() ") in ("no summary", "ingen opsummering", "none"):
         return "empty"
-    if len(text) < 3000 and _PLAN_MARKERS.search(text) and len(_RESULT_MARKERS.findall(text)) < 3:
+    table_rows = sum(1 for line in text.splitlines() if line.lstrip().startswith("|"))
+    if _RESULT_HEADING.search(text) or table_rows >= 3:
+        return "ok"
+    if _PLAN_HEADING.match(text) or _FORWARD_TAIL.search(text[-300:]):
+        return "plan_only"
+    if len(text) < 3000 and _PLAN_MARKERS.search(text) and len(_RESULT_WORDS.findall(text)) < 2:
         return "plan_only"
     return "ok"
 
