@@ -129,7 +129,9 @@ CIO'en kører sidst og får de andre teams' rapporter i sit mål. Hvert team få
 
 ## Agenter uden rapport
 
-En agent kan afslutte uden at levere andet end en plan ("Executing the data-gathering calls now") eller helt uden tekst. Runneren markerer dem (`report: plan_only/empty` pr. agent og `agents_without_report` pr. team), GitHub-loggen viser fx `· Risikoudvalg: completed · … · 1 af 4 agenter uden rapport: Tail Risk Analyst`, og Vibetrad viser "Ingen rapport" ved agenten.
+En agent kan afslutte uden at levere andet end en plan ("Executing the data-gathering calls now") eller helt uden tekst. Runneren markerer dem (`report: plan_only/empty` pr. agent og `agents_without_report` pr. team), GitHub-loggen viser fx `· Risikoudvalg: completed · … · 1 af 4 agenter uden rapport: Tail Risk Analyst`, og Vibetrad viser "Ingen rapport" eller "Kun en plan" ved agenten (ældre rapporter vurderes i browseren efter samme regler).
+
+Reglerne: en tekst med en resultat-overskrift (konklusion, vurdering, anbefaling, resultat, scenarier …) eller en tabel er en rapport. Uden det tæller teksten som en plan, hvis den begynder med overskriften "Plan" (eller "Approach", "Fremgangsmåde", "Metode"), eller hvis de sidste linjer er fremadrettede ("Executing … now", "Now let me …", "Jeg færdiggør nu rapporten"). Det fanger begge mønstre fra testkørslen 16/10, også en plan fuld af vægte i procent, som en simpel optælling af tal ville kalde en rapport. Testene bruger de mønstre (med ændrede tal).
 
 ## Symboler og gebyrer
 
@@ -203,7 +205,7 @@ Opdatér `VT_PORTFOLIO` (Kopiér VT_PORTFOLIO i Vibetrad → `gh secret set VT_P
 
 ```bash
 pip install "cryptography>=42" pyyaml pytest pandas
-python -m pytest -q                      # 134 tests (EODHD-integrationstesten kører kun, hvor vibe-trading-ai er installeret)
+python -m pytest -q                      # 144 tests (EODHD-integrationstesten kører kun, hvor vibe-trading-ai er installeret)
 VT_PORTFOLIO="$(cat runner/portfolio.example.json)" VT_RESULTS_PASSPHRASE=0123456789abcdef \
   python runner/run_week.py --dry-run --event workflow_dispatch --results /tmp/vt-results
 ```
