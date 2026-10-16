@@ -152,6 +152,15 @@ DEFAULT_GOAL = (
     "mellem positionerne og ingen unødige handler. Afslut med konkrete målvægte "
     "og hvad nye indskud bør gå til."
 )
+# weight_policy "target" (Kaspers valg 16/10/2026): 10 % er det langsigtede mål, som nås gradvist.
+TRANSITION_GOAL = (
+    "Gør porteføljen mere robust. Langsigtet mål: højst 10 % pr. enkeltaktie, men nå det gradvist: "
+    "foreslå en overgangsplan med trin og tidshorisont (fx nye indskud til en bred kerne og trinvise "
+    "justeringer) i stedet for at sælge ned til 10 % med det samme. Mindre korrelation mellem positionerne "
+    "og ingen unødige handler. Afslut med målvægte for hvert trin, hvad nye indskud bør gå til, og hvilke "
+    "begivenheder (regnskaber, lock-up-udløb, store kursudsving) der bør udløse en revurdering."
+)
+WEIGHT_POLICIES = ("limit", "target")
 LANG_SUFFIX = (
     " Skriv hele rapporten på dansk. Brug datoformat DD/MM/YYYY og angiv beløb i SEK, "
     "med lokal valuta i parentes hvor relevant. Dette er research, ikke personlig rådgivning, "
@@ -294,6 +303,8 @@ def load_portfolio(raw: str | None) -> dict:
             "kind": str(h.get("kind") or "stock"),
         })
     p["holdings"] = clean
+    policy = str(p.get("weight_policy") or "limit").strip().lower()
+    p["weight_policy"] = policy if policy in WEIGHT_POLICIES else "limit"
     p.setdefault("account", "ISK Nordnet")
     p.setdefault("currency", "SEK")
     p["cash_sek"] = float(p.get("cash_sek") or 0)
@@ -320,7 +331,8 @@ def portfolio_text(p: dict) -> str:
             bits.append(f"{h['qty']:g} stk")
         if h["cost_sek"]:
             bits.append(f"anskaffelse {h['cost_sek']:,.0f} SEK".replace(",", " "))
-        bits.append(f"maks. vægt {h['max_weight']:g} %")
+        bits.append(f"langsigtet mål {h['max_weight']:g} %" if p.get("weight_policy") == "target"
+                    else f"maks. vægt {h['max_weight']:g} %")
         lines.append("- " + ", ".join(bits))
     if p.get("cash_sek"):
         note = f" ({p['cash_note']})" if p.get("cash_note") else ""
@@ -401,7 +413,7 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
                reports: list[dict] | None = None, force_risk: bool = False,
                history: list[dict] | None = None, by_date: bool | None = None) -> list[dict]:
     """Ugens plan. Rækkefølge: risiko → dybdeanalyser → CIO (som får de andres konklusioner)."""
-    goal = (p.get("goal") or DEFAULT_GOAL).strip()
+    goal = (p.get("goal") or (TRANSITION_GOAL if p.get("weight_policy") == "target" else DEFAULT_GOAL)).strip()
     ptxt = portfolio_text(p)
     period = f"{dmy(dt.date.fromisoformat(week['from']))}–{dmy(dt.date.fromisoformat(week['to']))}"
     stocks = [h for h in p["holdings"] if h["kind"] not in ("cash", "fund", "etf")]
@@ -415,8 +427,10 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
         "vars": {"goal": (
             f"Vurdér drawdown, halerisiko og markedsregime for denne portefølje (periode {period}):\n{ptxt}\n"
             f"Vægte efter anskaffelse: {wtxt}. Brug portfolio_risk_xray på disse symboler og vægte, og quantlib_call til "
-            f"VaR/CVaR/EVT og regime. Stresstest: −30 % i {biggest['name']} ({biggest['ticker']}), −20 % i amerikansk "
-            "tech samlet, og +10 % SEK mod USD. Hvad er det samlede tab i SEK, og hvilke ændringer sænker risikoen mest?"
+            f"VaR/CVaR/EVT og regime. Regn tabet i SEK i fire scenarier: 1) {biggest['name']} ({biggest['ticker']}) −30 %, "
+            f"2) {biggest['name']} −50 %, 3) USD/SEK −10 %, 4) amerikansk tech samlet −25 %. Brug VaR kun som supplement, "
+            "angiv datavinduet, og sig tydeligt, når et papir har kort kurshistorik (se datatjekkets facit): så er "
+            "volatilitet, VaR, beta og korrelation statistisk usikre. Hvilke ændringer sænker risikoen mest?"
             + LANG_SUFFIX)},
     }]
     if plan_kind == "fuld":
@@ -608,15 +622,37 @@ def prepare_shellfree_presets(dst: Path, src: Path | None = None, brief: str = "
     return changed
 
 
-def month_spent(results: Path, ref: dt.datetime) -> float:
-    """Samlet estimeret forbrug (USD) for rigtige kørsler i indeværende kalendermåned."""
+def budget_period_start(ref: dt.datetime, reset_day: int | None = None) -> dt.date:
+    """Første dag i budgetperioden.
+
+    Max-abonnementets API-kredit (100 USD) fornyes pr. faktureringsperiode og udløber ved periodens
+    slutning, så månedsloftet følger samme dag (``VT_BUDGET_RESET_DAY``, fx 23). 1 = kalendermåned.
+    Dage over 28 rundes ned til 28, så perioden findes i alle måneder.
+    """
+    if reset_day is None:
+        try:
+            reset_day = int(os.environ.get("VT_BUDGET_RESET_DAY", "1") or 1)
+        except ValueError:
+            reset_day = 1
+    day = min(max(reset_day, 1), 28)
+    d = ref.date()
+    if d.day >= day:
+        return d.replace(day=day)
+    y, m = (d.year, d.month - 1) if d.month > 1 else (d.year - 1, 12)
+    return dt.date(y, m, day)
+
+
+def month_spent(results: Path, ref: dt.datetime, reset_day: int | None = None) -> float:
+    """Samlet estimeret forbrug (USD) for rigtige kørsler i den aktuelle budgetperiode."""
     try:
         ledger = json.loads((results / "ledger.json").read_text("utf-8"))
     except Exception:
         return 0.0
-    ym = ref.strftime("%Y-%m")
+    first = budget_period_start(ref, reset_day)
+    nxt = dt.date(first.year + (first.month == 12), first.month % 12 + 1, first.day)
+    start, end = first.isoformat(), nxt.isoformat()
     return round(sum(float(e.get("cost_usd") or 0) for e in ledger.get("runs", [])
-                     if str(e.get("generated_at", "")).startswith(ym) and not e.get("dry_run")), 2)
+                     if start <= str(e.get("generated_at", ""))[:10] < end and not e.get("dry_run")), 2)
 
 
 # ---------------------------------------------------------------------------
@@ -904,9 +940,11 @@ def main(argv: list[str] | None = None) -> int:
     price_out = float(os.environ.get("VT_PRICE_OUT_PER_MTOK", "10"))
     iterations = int(os.environ.get("VT_PBKDF2_ITER", str(PBKDF2_ITER)))
 
+    period_start = budget_period_start(ref)
     spent_before = 0.0 if args.dry_run else month_spent(results, ref)
     budget = max(0.0, min(run_budget, month_budget - spent_before))
-    con.say(f"Budget: {budget:.2f} USD til denne kørsel (brugt i måneden: {spent_before:.2f} af {month_budget:.0f} USD)")
+    con.say(f"Budget: {budget:.2f} USD til denne kørsel (brugt siden {dmy(period_start)}: "
+            f"{spent_before:.2f} af {month_budget:.0f} USD)")
 
     log_path = Path(tempfile.gettempdir()) / "vibetrad-vt.log"
     log_path.write_bytes(b"")
@@ -1056,6 +1094,7 @@ def main(argv: list[str] | None = None) -> int:
         "model": os.environ.get("LANGCHAIN_MODEL_NAME"), "provider": os.environ.get("LANGCHAIN_PROVIDER"),
         "dry_run": args.dry_run, "trigger": args.event,
         "portfolio": {"account": portfolio["account"], "as_of": portfolio.get("as_of"),
+                      "weight_policy": portfolio.get("weight_policy", "limit"),
                       "holdings": portfolio["holdings"], "cash_sek": portfolio["cash_sek"],
                       "weights_cost": cost_weights(portfolio)},
         "upcoming_reports": reports, "plan": [{"preset": s["preset"], "reason": s["reason"]} for s in plan],
@@ -1065,7 +1104,8 @@ def main(argv: list[str] | None = None) -> int:
                    "est_cost_usd": round(sum(r.get("est_cost_usd", 0) for r in runs), 2),
                    "price_basis": f"{price_in:g}/{price_out:g} USD pr. mio. tokens (ind/ud) – estimat",
                    "budget_usd": round(budget, 2), "month_spent_before_usd": spent_before,
-                   "month_budget_usd": month_budget, "plan_kind": plan_kind, "shellfree_presets": shellfree},
+                   "month_budget_usd": month_budget, "budget_period_start": period_start.isoformat(),
+                   "plan_kind": plan_kind, "shellfree_presets": shellfree},
         "errors": errors, "log_tail": log_tail,
         "github": {"repo": os.environ.get("GITHUB_REPOSITORY"), "run_id": os.environ.get("GITHUB_RUN_ID"),
                    "server": os.environ.get("GITHUB_SERVER_URL", "https://github.com")},

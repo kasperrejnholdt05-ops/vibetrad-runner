@@ -273,3 +273,69 @@ def test_yahoo_fx_dated_one_day_early_is_aligned_and_value_uses_common_fx():
     dc2 = run(vt_px=vt_px2)
     assert dc2["portfolio"]["diff_pct"] == 0 and dc2["portfolio"]["status"] == "ok"
     assert next(f for f in dc2["fx"] if f["pair"] == "USDSEK")["status"] == "warn"
+
+
+# --- Kort kurshistorik, gammel portefølje og vægtpolitik (red team 16/10/2026) ---------------
+class FakeWithHistory(Fake):
+    def __init__(self, *a, history=None, **k):
+        super().__init__(*a, **k)
+        self._hist = history or {}
+
+    def history(self, code, start, end):
+        return [r for r in self._hist.get(code, []) if start <= r[0] <= end]
+
+
+def test_short_history_uses_real_rows_and_reaches_the_brief():
+    vt, eod = sources()
+    # 30 handelsdage fra børsnoteringen: op til 200, ned til 100 (−50 %), tilbage til 150
+    days = [(dt.date(2026, 6, 12) + dt.timedelta(days=k)).isoformat() for k in range(60)]
+    days = [d for d in days if dt.date.fromisoformat(d).weekday() < 5][:30]
+    closes = [150 + 5 * k for k in range(11)] + [200 - 10 * k for k in range(1, 11)] + [100 + 5 * k for k in range(1, 10)]
+    eod = FakeWithHistory("EODHD", eod._px, eod._prof, eod._earn, history={"SPCX.US": list(zip(days, closes))})
+    dc = dtj.run(P, WEEK, REF, vt=vt, eod=eod)
+    (s,) = dc["short_history"]
+    assert s == {"ticker": "SPCX.US", "name": "SpaceX", "ipo_date": "2026-06-12", "trading_days": 30,
+                 "approx": False, "max_drawdown_pct": -50.0}
+    assert dc["status"] == "PASS"  # kort historik er information, ikke en datafejl
+    brief = dtj.agent_brief(dc)
+    assert "**Kort historik:** SpaceX (SPCX.US) har kun 30 handelsdage (børsnoteret 12/06/2026), største fald fra top til bund -50 %" in brief
+    assert "og for porteføljen (vægt" in brief and "statistisk usikre" in brief
+    assert all(x["ticker"] != "GOOGL.US" for x in dc["short_history"])  # ingen IPO-dato = ingen markering
+
+
+def test_short_history_estimated_when_prices_unavailable():
+    dc = run()  # den simple falske EODHD-kilde har ingen history()
+    (s,) = dc["short_history"]
+    assert s["approx"] is True and s["max_drawdown_pct"] is None and s["trading_days"] == dtj._weekdays("2026-06-12", WEEK["to"])
+    assert "har kun ca. " in dtj.agent_brief(dc) and "største fald" not in dtj.agent_brief(dc)
+    assert dtj._weekdays("2026-10-12", "2026-10-18") == 5 and dtj._weekdays("2026-10-18", "2026-10-12") == 0
+
+
+@pytest.mark.parametrize("as_of, warn", [("09/10/2026", False), ("08/10/2026", False), ("07/10/2026", True), ("2026-10-01", True)])
+def test_stale_portfolio_warns_after_seven_days(as_of, warn):
+    vt, eod = sources()
+    dc = dtj.run(dict(P, as_of=as_of), WEEK, REF, vt=vt, eod=eod)
+    hit = [i for i in dc["issues"] if i.startswith("ADVARSEL portefølje: VT_PORTFOLIO er opgjort")]
+    assert bool(hit) is warn and (dc["status"] == "ADVARSEL") is warn
+    if warn:
+        assert "dage gammel). Opdatér beholdningen i Vibetrad og kopiér VT_PORTFOLIO til GitHub." in hit[0]
+        assert hit[0] in dtj.agent_brief(dc)  # agenterne får samme besked
+
+
+def test_stale_portfolio_threshold_can_be_changed(monkeypatch):
+    vt, eod = sources()
+    monkeypatch.setenv("VT_PORTFOLIO_MAX_AGE_DAYS", "14")
+    dc = dtj.run(dict(P, as_of="01/10/2026"), WEEK, REF, vt=vt, eod=eod)
+    assert dc["portfolio_age_days"] == 14 and dc["status"] == "PASS"
+    vt, eod = sources()
+    dc = dtj.run(dict(P), WEEK, REF, vt=vt, eod=eod)  # ingen dato: kan ikke vurderes, ingen advarsel
+    assert dc["portfolio_age_days"] is None and dc["status"] == "PASS"
+
+
+def test_transition_policy_changes_the_weight_label():
+    p = dict(P, weight_policy="target")
+    vt, eod = sources()
+    brief = dtj.agent_brief(dtj.run(p, WEEK, REF, vt=vt, eod=eod))
+    assert "(langsigtet mål 10 %)" in brief and "(maks 10 %)" not in brief
+    vt, eod = sources()
+    assert "(maks 10 %)" in dtj.agent_brief(dtj.run(P, WEEK, REF, vt=vt, eod=eod))

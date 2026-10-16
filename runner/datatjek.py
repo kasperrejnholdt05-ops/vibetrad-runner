@@ -44,6 +44,8 @@ VALUE_OK, VALUE_WARN = 0.5, 2.0
 MCAP_OK, MCAP_WARN = 5.0, 20.0
 STALE_DAYS = 6
 LOCKUP_DAYS = 180
+SHORT_HISTORY_DAYS = 365  # papirer børsnoteret for under et år siden: risikotal er statistisk usikre
+PORTFOLIO_MAX_AGE_DAYS = 7  # VT_PORTFOLIO_MAX_AGE_DAYS kan ændre det
 
 LABEL = {"ok": "PASS", "warn": "ADVARSEL", "fail": "FEJL"}
 _STOP = {"inc", "corp", "corporation", "co", "class", "common", "stock", "shares", "share", "plc", "ab", "as", "a/s",
@@ -80,6 +82,12 @@ def _date(x: Any) -> str | None:
         return dt.date(int(parts[0]), int(parts[1]), int(parts[2])).isoformat()
     except ValueError:  # fx 31/11 eller amerikansk 10/28/2026
         return None
+
+
+def _weekdays(start: str, end: str) -> int:
+    """Hverdage fra og med start til og med end (skøn for handelsdage, når kurserne ikke kan hentes)."""
+    a, b = dt.date.fromisoformat(start), dt.date.fromisoformat(end)
+    return sum(1 for k in range((b - a).days + 1) if (a + dt.timedelta(days=k)).weekday() < 5) if b >= a else 0
 
 
 def dmy(iso: str | None) -> str:
@@ -262,6 +270,10 @@ class EodhdSource:
                 out[code] = {"rows": sorted(clean), "source": "eodhd", "currency": eo.currency_of(code),
                              "raw_close": _num(rows[-1].get("close"))}
         return out
+
+    def history(self, code: str, start: str, end: str) -> list[tuple[str, float]]:
+        """Daglige lukkekurser (justerede) for ét papir, fx siden børsnoteringen."""
+        return (self.prices([code], start, end).get(code) or {}).get("rows", [])
 
     def profile(self, code: str) -> dict:
         try:
@@ -476,6 +488,18 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
     pairs = fx_pairs(insts, p.get("currency") or "SEK")
     issues: list[str] = []
 
+    # Er beholdningen (VT_PORTFOLIO) for gammel? Den opdateres manuelt efter handler.
+    as_of = _date(p.get("as_of"))
+    try:
+        max_age = int(os.environ.get("VT_PORTFOLIO_MAX_AGE_DAYS", PORTFOLIO_MAX_AGE_DAYS))
+    except ValueError:
+        max_age = PORTFOLIO_MAX_AGE_DAYS
+    portfolio_age = (ref.date() - dt.date.fromisoformat(as_of)).days if as_of else None
+    stale = portfolio_age is not None and portfolio_age > max_age
+    if stale:
+        issues.append(f"ADVARSEL portefølje: VT_PORTFOLIO er opgjort {dmy(as_of)} ({portfolio_age} dage gammel). "
+                      "Opdatér beholdningen i Vibetrad og kopiér VT_PORTFOLIO til GitHub.")
+
     def fetch(src: Any, items: list[str]) -> dict:
         if not getattr(src, "available", False) or not items:
             return {}
@@ -508,8 +532,9 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
             r["info"] = fx_shift[pair]
         fx_rows.append(r)
 
-    # Nøgletal, navn, valuta og IPO/lock-up
+    # Nøgletal, navn, valuta og IPO/lock-up (og kort kurshistorik)
     fundamentals, events = [], []
+    short_history: list[dict] = []
     profiles: dict[str, dict] = {}
     for i in insts:
         if not with_profiles or i["role"] == "benchmark":
@@ -547,6 +572,23 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
                 events.append({"ticker": i["ticker"], "kind": "lockup", "date": lock,
                                "text": f"{i['name']}: børsnoteret {dmy(ipo)}. Typisk lock-up udløber ca. {dmy(lock)} "
                                        f"(estimat: IPO + {LOCKUP_DAYS} dage, bekræft i prospektet)."})
+        if ipo and dt.date.fromisoformat(ipo) > ref.date() - dt.timedelta(days=SHORT_HISTORY_DAYS):
+            hist = []
+            if getattr(eod, "available", False) and hasattr(eod, "history"):
+                try:
+                    hist = eod.history(i["ticker"], ipo, cut) or []
+                except Exception as exc:  # noqa: BLE001
+                    eod.errors.append(f"historik: {type(exc).__name__}")
+            closes = [c for d, c in hist if d >= ipo]
+            dd = None
+            if len(closes) > 1:
+                peak, dd = closes[0], 0.0
+                for c in closes:
+                    peak = max(peak, c)
+                    dd = min(dd, c / peak - 1)
+            days = len(closes) or _weekdays(ipo, cut)
+            short_history.append({"ticker": i["ticker"], "name": i["name"], "ipo_date": ipo, "trading_days": days,
+                                  "approx": not closes, "max_drawdown_pct": round(dd * 100, 1) if dd is not None else None})
         if getattr(eod, "available", False) and i["kind"] not in ("fund",):
             since = (dt.date.fromisoformat(week["from"]) - dt.timedelta(days=30)).isoformat()
             for e in eod.actions(i["ticker"], since):
@@ -702,7 +744,7 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
                       f"EODHD {_nf(value.get('eodhd'), 0)} SEK")
 
     states = ([r["status"] for r in rows + fx_rows] + [f["status"] for f in fundamentals]
-              + [e["status"] for e in earnings] + [pstatus])
+              + [e["status"] for e in earnings] + [pstatus] + (["warn"] if stale else []))
     if not getattr(eod, "available", False) or not getattr(vt, "available", False):
         states.append("warn")
     status = worst(states)
@@ -720,6 +762,8 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
                               "errors": list(dict.fromkeys(getattr(eod, "errors", [])))[:10]}},
         "counts": count, "instruments": rows, "fx": fx_rows, "fundamentals": fundamentals,
         "earnings": earnings, "events": sorted(events, key=lambda e: e["date"]), "portfolio": portfolio,
+        "short_history": short_history, "portfolio_as_of": as_of, "portfolio_age_days": portfolio_age,
+        "weight_policy": p.get("weight_policy", "limit"),
         "issues": issues[:40],
     }
 
@@ -757,13 +801,14 @@ def agent_brief(dc: dict | None, limit: int = 3800) -> str:
              "", "| Papir | Lukkekurs | Uge | Værdi SEK | Vægt | Næste regnskab |", "|---|---|---|---|---|---|"]
     by_t = {r["ticker"]: r for r in dc.get("portfolio", {}).get("rows", [])}
     er = {e["ticker"]: e for e in dc.get("earnings", [])}
+    lim = "langsigtet mål" if dc.get("weight_policy") == "target" else "maks"
     for r in dc.get("instruments", []):
         src = r.get("eodhd") or r.get("vt") or {}
         pr = by_t.get(r["ticker"], {})
         e = er.get(r["ticker"]) or {}
         when = {"AfterMarket": " efter lukning", "BeforeMarket": " før åbning"}.get(e.get("eodhd_when") or "", "")
         rep = (dmy(e.get("verified")) + when + (f" ({e.get('agree')} kilder)" if e.get("agree") else "")) if e.get("verified") else "–"
-        w = (f"{_nf(pr.get('weight_pct'), 1)} %" + (f" (maks {pr['max_weight']:g} %)" if pr.get("over_max") else "")) if pr.get("weight_pct") is not None else "–"
+        w = (f"{_nf(pr.get('weight_pct'), 1)} %" + (f" ({lim} {pr['max_weight']:g} %)" if pr.get("over_max") else "")) if pr.get("weight_pct") is not None else "–"
         lines.append(f"| {r['name']} ({r['ticker']}) | {_nf(src.get('close'))} {eo.currency_of(r['ticker']) or ''} "
                      f"({dmy(src.get('date'))}) | {_sp(src.get('week_pct'))} | {_nf(pr.get('value_sek'), 0)} | {w} | {rep} |")
     fx = " · ".join(f"{f['pair'][:3]}/{f['pair'][3:]} {_nf((f.get('eodhd') or f.get('vt') or {}).get('close'), 4)}"
@@ -772,6 +817,14 @@ def agent_brief(dc: dict | None, limit: int = 3800) -> str:
     lines.append("")
     lines.append(f"{fx} · Kontant {_nf(pf.get('cash_sek'), 0)} SEK · I alt {_nf(pf.get('total_sek'), 0)} SEK "
                  f"(markedsværdi, {('EODHD' if pf.get('chosen') == 'eodhd' else 'Vibe-Trading')}).")
+    for s in dc.get("short_history", []):
+        w = (by_t.get(s["ticker"]) or {}).get("weight_pct")
+        lines.append(f"**Kort historik:** {s['name']} ({s['ticker']}) har kun {'ca. ' if s.get('approx') else ''}"
+                     f"{s['trading_days']} handelsdage (børsnoteret {dmy(s['ipo_date'])})"
+                     + (f", største fald fra top til bund {_nf(s['max_drawdown_pct'], 0)} %" if s.get("max_drawdown_pct") is not None else "")
+                     + ". Volatilitet, VaR, beta og korrelation for papiret"
+                     + (f" og for porteføljen (vægt {_nf(w, 0)} %)" if w is not None else "")
+                     + " er statistisk usikre. Sig det, når du bruger dem.")
     ev = [e["text"] for e in dc.get("events", []) if e["date"] >= dc["ref_date"] or e["kind"] != "lockup"]
     if ev:
         lines.append("Begivenheder: " + " ".join(ev[:6]))

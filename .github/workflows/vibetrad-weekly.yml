@@ -58,6 +58,8 @@ jobs:
       VT_SCHEDULE: ${{ vars.VT_SCHEDULE || 'off' }}
       VT_RUN_BUDGET_USD: ${{ inputs.budget_usd || vars.VT_RUN_BUDGET_USD || '35' }}
       VT_MONTHLY_BUDGET_USD: ${{ vars.VT_MONTHLY_BUDGET_USD || '95' }}
+      # Max-abonnementets API-kredit fornyes d. 23. (faktureringsdagen); månedsloftet følger den.
+      VT_BUDGET_RESET_DAY: ${{ vars.VT_BUDGET_RESET_DAY || '23' }}
       VT_CIO_RESERVE_USD: ${{ vars.VT_CIO_RESERVE_USD || '8' }}
       VT_SWARM_TIMEOUT_MIN: ${{ vars.VT_SWARM_TIMEOUT_MIN || '40' }}
       VT_EARNINGS_DAYS: ${{ vars.VT_EARNINGS_DAYS || '14' }}
