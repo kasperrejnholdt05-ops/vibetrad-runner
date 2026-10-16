@@ -36,6 +36,8 @@ Før agenterne starter, henter `runner/datatjek.py` de samme tal fra to uafhæng
 | | Navn, valuta, markedsværdi, P/E, regnskabsdato | Vibe-Tradings egen Yahoo-klient (`quoteSummary`), med yfinance som reserve |
 | **EODHD** | Kurser (justeret), valutakurser, nøgletal, IPO-dato, regnskabskalender (før/efter åbning), udbytter og splits | EODHD's REST-API (secret `EODHD_API_KEY`) |
 | **Porteføljen** | Regnskabsdatoer | `next_reports` og noter på overvågningslisten i `VT_PORTFOLIO` |
+| **Porteføljen** | Opgørelsesdato | `as_of` i `VT_PORTFOLIO`: ADVARSEL, når den er over 7 dage gammel |
+| **EODHD** | Kort kurshistorik | IPO-dato under et år siden: antal handelsdage og største fald fra top til bund kommer i agenternes facit, så risikotal for papiret omtales som usikre |
 
 | Kontrol | PASS | ADVARSEL | FEJL |
 |---|---|---|---|
@@ -118,13 +120,20 @@ Alle Vibe-Tradings presets bruger normalt `bash` til at skrive og køre Python. 
 
 Samtidig får agenterne ekstra Vibe-Trading-skills: `research-discipline` (bias-tjekliste) på alle syntetiserende agenter, `thesis-tracker` og `investor-lenses` på CIO'en, `risk-analysis`, `hedging-strategy` og `correlation-regime` i risikoudvalget, `management-deep-dive` i værdikomitéen og `private-company-research` (rammen for nyligt børsnoterede selskaber som SpaceX) hos CIO'en, værdikomitéen, regnskabsdesken og fundamental-teamet. Når målet er SPCX, får agenterne også en eksplicit henvisning til den. CIO'en får også `report_audit`, så den faktatjekker en stikprøve af sine egne tal før aflevering og afslutter med "Faktatjek: PASS/FAIL".
 
+## Vægtpolitik
+
+`weight_policy` i `VT_PORTFOLIO` styrer, hvordan `max_weight` bruges. `limit` (standard) er en hård grænse. `target` (Kaspers valg 16/10/2026) gør 10 % pr. aktie til et langsigtet mål: CIO'en skal foreslå en overgangsplan med trin og tidshorisont i stedet for at sælge ned med det samme, og Vibetrads tjekliste viser "Over det langsigtede mål" som advarsel i stedet for en overskredet grænse. Knappen Kopiér VT_PORTFOLIO i Vibetrad sætter `target`.
+
+Risikoudvalget regner altid tabet i SEK i fire scenarier: den største position −30 % og −50 %, USD/SEK −10 % og amerikansk tech samlet −25 %. VaR bruges kun som supplement.
+
 ## Budget
 
 | Variabel | Standard | Betydning |
 |---|---|---|
 | `VT_RUN_BUDGET_USD` | `35` | Maks. estimeret forbrug pr. kørsel (kan sættes pr. kørsel med input `budget_usd`). Ekstra teams springes over, før CIO'en mister sin reserve. |
 | `VT_SCHEDULE` | `off` | `on` slår den automatiske lørdagskørsel til igen. |
-| `VT_MONTHLY_BUDGET_USD` | `95` | Loft pr. kalendermåned (af API-kreditten på 100 USD). Læses fra `results/ledger.json`. |
+| `VT_MONTHLY_BUDGET_USD` | `95` | Loft pr. budgetperiode (af Max-abonnementets API-kredit på 100 USD). Læses fra `results/ledger.json`. |
+| `VT_BUDGET_RESET_DAY` | `23` | Dag i måneden, hvor budgetperioden starter forfra. Max-kreditten fornyes på faktureringsdagen og udløber ved periodens slutning. `1` = kalendermåned. |
 | `VT_CIO_RESERVE_USD` | `8` | Holdes altid tilbage til CIO-gennemgangen. |
 | `VT_PRICE_IN_PER_MTOK` / `VT_PRICE_OUT_PER_MTOK` | `2` / `10` | Pris pr. mio. tokens for claude-sonnet-5 (ind/ud) til estimatet. Tjek platform.claude.com → Usage. |
 | `VT_MAX_SWARMS` | `6` | Højst så mange teams pr. kørsel (CIO'en bevares altid). |
@@ -135,6 +144,7 @@ Samtidig får agenterne ekstra Vibe-Trading-skills: `research-discipline` (bias-
 | `VT_MONTHLY_SLOT` | tom | Kun ved manuel kørsel (input "monthly_slot"): tving månedens team 1–5. |
 | `VT_MODEL` | `claude-sonnet-5` | Model til alle agenter. |
 | `VT_DATATJEK` | `on` | `off` springer datatjekket over. |
+| `VT_PORTFOLIO_MAX_AGE_DAYS` | `7` | Datatjekket giver ADVARSEL, når VT_PORTFOLIO er opgjort for mere end så mange dage siden, og agenterne får samme besked. |
 
 Sættes under Settings → Secrets and variables → Actions → **Variables** eller med `gh variable set NAVN --body VÆRDI --repo kasperrejnholdt05-ops/vibetrad-runner`.
 
@@ -176,7 +186,7 @@ Opdatér `VT_PORTFOLIO` (Kopiér VT_PORTFOLIO i Vibetrad → `gh secret set VT_P
 
 ```bash
 pip install "cryptography>=42" pyyaml pytest pandas
-python -m pytest -q                      # 109 tests (EODHD-integrationstesten kører kun, hvor vibe-trading-ai er installeret)
+python -m pytest -q                      # 120 tests (EODHD-integrationstesten kører kun, hvor vibe-trading-ai er installeret)
 VT_PORTFOLIO="$(cat runner/portfolio.example.json)" VT_RESULTS_PASSPHRASE=0123456789abcdef \
   python runner/run_week.py --dry-run --event workflow_dispatch --results /tmp/vt-results
 ```

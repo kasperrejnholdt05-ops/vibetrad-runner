@@ -171,8 +171,34 @@ def test_month_spent_reads_ledger(tmp_path):
         {"generated_at": "2026-10-17T09:00:00+02:00", "cost_usd": 20.5},
         {"generated_at": "2026-10-17T09:00:00+02:00", "cost_usd": 99, "dry_run": True},
         {"generated_at": "2026-09-26T09:00:00+02:00", "cost_usd": 50}]}))
-    assert rw.month_spent(tmp_path, sto("2026-10-24T08:00")) == 30.5
-    assert rw.month_spent(tmp_path / "nope", sto("2026-10-24T08:00")) == 0.0
+    assert rw.month_spent(tmp_path, sto("2026-10-24T08:00"), reset_day=1) == 30.5
+    assert rw.month_spent(tmp_path / "nope", sto("2026-10-24T08:00"), reset_day=1) == 0.0
+
+
+def test_budget_follows_billing_period(tmp_path, monkeypatch):
+    # Max-kreditten fornyes d. 23. og udløber ved periodens slutning: loftet skal følge perioden
+    (tmp_path / "ledger.json").write_text(json.dumps({"runs": [
+        {"generated_at": "2026-09-26T09:00:00+02:00", "cost_usd": 50},
+        {"generated_at": "2026-10-15T12:23:38+02:00", "cost_usd": 10.04},
+        {"generated_at": "2026-10-23T22:30:00+02:00", "cost_usd": 30}]}))
+    assert rw.budget_period_start(sto("2026-10-16T09:00"), 23) == rw.dt.date(2026, 9, 23)
+    assert rw.budget_period_start(sto("2026-10-23T00:10"), 23) == rw.dt.date(2026, 10, 23)
+    assert rw.budget_period_start(sto("2026-01-05T09:00"), 23) == rw.dt.date(2025, 12, 23)
+    assert rw.budget_period_start(sto("2026-03-15T09:00"), 31) == rw.dt.date(2026, 2, 28)
+    assert rw.month_spent(tmp_path, sto("2026-10-16T09:00"), reset_day=23) == 60.04
+    assert rw.month_spent(tmp_path, sto("2026-10-24T09:00"), reset_day=23) == 30.0
+    monkeypatch.setenv("VT_BUDGET_RESET_DAY", "23")
+    assert rw.month_spent(tmp_path, sto("2026-10-24T09:00")) == 30.0
+    monkeypatch.setenv("VT_BUDGET_RESET_DAY", "x")  # ugyldig værdi: kalendermåned
+    assert rw.budget_period_start(sto("2026-10-16T09:00")) == rw.dt.date(2026, 10, 1)
+
+
+def test_console_shows_budget_period(tmp_path):
+    p = run_main(tmp_path, "--event", "workflow_dispatch", "--now", "2026-10-16T12:00", VT_BUDGET_RESET_DAY="23")
+    assert p.returncode == 0, p.stderr
+    assert "brugt siden 23/09/2026: 0.00 af 95 USD" in p.stdout
+    data = rw.decrypt(json.loads((tmp_path / "results" / "latest.enc.json").read_text()), PASS)
+    assert data["totals"]["budget_period_start"] == "2026-09-23"
 
 
 def test_upcoming_reports_horizon_and_lookup_fallback():
@@ -579,3 +605,21 @@ def test_fred_tool_for_regime_agent_and_cio_with_guidance_and_brief(tmp_path, mo
     rw.prepare_shellfree_presets(tmp_path / "dst3", src)
     (cio3,) = yaml.safe_load((tmp_path / "dst3" / "portfolio_review_board.yaml").read_text())["agents"]
     assert "get_macro_series" not in cio3["tools"]
+
+
+def test_transition_policy_goal_text_and_risk_scenarios():
+    raw = dict(PORTFOLIO, weight_policy="target")
+    p = rw.load_portfolio(json.dumps(raw))
+    assert p["weight_policy"] == "target" and "langsigtet mål 10 %" in rw.portfolio_text(p)
+    plan = rw.build_plan(p, sto("2026-10-17T08:00"), rw.week_window(sto("2026-10-17T08:00")), reports=[])
+    by = {s["preset"]: s for s in plan}
+    cio = by["portfolio_review_board"]["vars"]["goal"]
+    assert "overgangsplan" in cio and "i stedet for at sælge ned til 10 % med det samme" in cio
+    risk = by["risk_committee"]["vars"]["goal"]
+    for txt in ("−30 %", "−50 %", "USD/SEK −10 %", "amerikansk tech samlet −25 %", "Brug VaR kun som supplement", "kort kurshistorik"):
+        assert txt in risk, txt
+    # en goal fra VT_PORTFOLIO vinder stadig, og en ukendt politik bliver "limit"
+    p2 = rw.load_portfolio(json.dumps(dict(PORTFOLIO, weight_policy="nonsens", goal="Egen tekst.")))
+    assert p2["weight_policy"] == "limit" and "maks. vægt" in rw.portfolio_text(p2)
+    plan2 = rw.build_plan(p2, sto("2026-10-17T08:00"), rw.week_window(sto("2026-10-17T08:00")), reports=[])
+    assert next(s for s in plan2 if s["preset"] == "portfolio_review_board")["vars"]["goal"].startswith("Egen tekst.")
