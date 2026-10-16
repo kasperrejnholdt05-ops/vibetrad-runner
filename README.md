@@ -142,7 +142,8 @@ Sættes under Settings → Secrets and variables → Actions → **Variables** e
 
 - Repoet er offentligt, fordi Claude kun kan hente filer fra offentlige repoer. Det indeholder kun kode og krypterede resultater.
 - Porteføljen ligger i secret `VT_PORTFOLIO`, rapporterne krypteres med AES-256-GCM (PBKDF2-SHA256, 600 000 runder) fra secret `VT_RESULTS_PASSPHRASE`.
-- GitHub-loggen viser kun status-linjer. Testene tjekker, at tickere, navne og beløb ikke slipper ud.
+- GitHub-loggen viser kun status-linjer (FRED-linjen nævner den offentlige US 10-års rente). Testene tjekker, at tickere, navne og beløb ikke slipper ud.
+- Resultatet pushes med op til 5 forsøg: er main ændret under kørslen, lægges resultat-commit'et oven på den nyeste main. Den krypterede rapport gemmes desuden som artifact på kørslen i 14 dage, så en betalt kørsel ikke går tabt, hvis push fejler.
 - Ukrypteret er kun: ugenummer, periode, tidspunkt, status, antal teams, preset-navne, estimeret forbrug og datatjekkets samlede status (PASS/ADVARSEL/FEJL).
 - EODHD-nøglen fjernes fra alle fejlbeskeder og fra log-uddraget i rapporten. Testene tjekker, at den hverken når loggen eller resultatfilerne.
 
@@ -175,7 +176,7 @@ Opdatér `VT_PORTFOLIO` (Kopiér VT_PORTFOLIO i Vibetrad → `gh secret set VT_P
 
 ```bash
 pip install "cryptography>=42" pyyaml pytest pandas
-python -m pytest -q                      # 106 tests (EODHD-integrationstesten kører kun, hvor vibe-trading-ai er installeret)
+python -m pytest -q                      # 109 tests (EODHD-integrationstesten kører kun, hvor vibe-trading-ai er installeret)
 VT_PORTFOLIO="$(cat runner/portfolio.example.json)" VT_RESULTS_PASSPHRASE=0123456789abcdef \
   python runner/run_week.py --dry-run --event workflow_dispatch --results /tmp/vt-results
 ```

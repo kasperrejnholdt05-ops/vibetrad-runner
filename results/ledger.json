@@ -2,6 +2,17 @@
  "schema": 1,
  "runs": [
   {
+   "run_id": "2026-W41",
+   "generated_at": "2026-10-15T12:23:38+02:00",
+   "week_id": "2026-W41",
+   "cost_usd": 10.04,
+   "status": "partial",
+   "dry_run": false,
+   "runs": 3,
+   "completed": 2,
+   "note": "Tilføjet 16/10/2026: kørt med den gamle version før ledgeren (2 997 167 ind / 404 242 ud tokens à 2/10 USD pr. mio.)"
+  },
+  {
    "run_id": "2026-W42_20261015-1928_38777639922",
    "generated_at": "2026-10-15T19:28:47+02:00",
    "week_id": "2026-W42",
