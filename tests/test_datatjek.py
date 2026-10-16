@@ -199,6 +199,7 @@ def test_real_source_classes_degrade_without_dependencies(monkeypatch):
     dc = dtj.run(P, WEEK, REF, vt=v, eod=e)
     assert dc["status"] == "FEJL" and dc["portfolio"]["total_sek"] is None
     assert any("EODHD-nøglen mangler" in i for i in dc["issues"]) and any("Vibe-Trading var ikke" in i for i in dc["issues"])
+    assert not any("None" in i for i in dc["issues"])  # manglende værdier vises som "–", ikke Pythons None
 
 
 def test_no_rows_up_to_today_is_a_failure_not_a_crash():

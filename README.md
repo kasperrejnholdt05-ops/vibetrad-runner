@@ -79,7 +79,7 @@ python tools/vt_med_eodhd.py tjek --portfolio-file ~/portefolje.json   # samme J
 
 Nøglen fjernes fra alle fejlbeskeder og logs. En afvist nøgle (HTTP 401) stopper EODHD for resten af kørslen. Et endpoint, abonnementet ikke dækker (HTTP 403), springes over, mens resten virker. Efter 4 mislykkede kald i træk holdes 5 minutters pause, så et nedbrud ikke koster minutter. Vibe-Trading bevarer EODHD som US-reserve, også hvis kilderækkefølgen ændres i web-UI'ets Settings (medmindre du selv har valgt rækkefølgen for US-aktier).
 
-**Ekstra Vibe-Trading-værktøjer pr. team** (tilføjet ud over presets): regnskabsdesken får `get_stock_profile`, `get_sec_filings`, `get_financial_statements` og `get_stock_news`. Makro-desken får `get_macro_series` (FRED, kræver gratis `FRED_API_KEY`). Sentiment får `get_stock_news`, `sentiment` og `web_search`. Værdi-, fundamental- og investeringskomitéen får `get_stock_profile`/`get_sec_filings`/`get_fundamentals`. ETF-desken og CIO'en får `etf_holdings` (overlap mellem fonde og enkeltaktier). Alle data-agenter får `get_eodhd_data`. Værktøjer, der kræver en nøgle, tilføjes kun, når nøglen findes.
+**Ekstra Vibe-Trading-værktøjer pr. team** (tilføjet ud over presets): regnskabsdesken får `get_stock_profile`, `get_sec_filings`, `get_financial_statements` og `get_stock_news`. Makro-desken, risikoudvalgets regime-agent og CIO'en får `get_macro_series` (FRED, kræver gratis `FRED_API_KEY`). Sentiment får `get_stock_news`, `sentiment` og `web_search`. Værdi-, fundamental- og investeringskomitéen får `get_stock_profile`/`get_sec_filings`/`get_fundamentals`. ETF-desken og CIO'en får `etf_holdings` (overlap mellem fonde og enkeltaktier). Alle data-agenter får `get_eodhd_data`. Værktøjer, der kræver en nøgle, tilføjes kun, når nøglen findes.
 
 **I codespacet:**
 ```bash
@@ -89,6 +89,24 @@ python ~/vibetrad-runner/tools/vt_med_eodhd.py nøgle                  # virker 
 claude mcp add vibe-trading -- python ~/vibetrad-runner/tools/vt_med_eodhd.py mcp   # Claude Code
 ```
 Nøglen gives som Codespaces-secret `EODHD_API_KEY` (github.com → Settings → Codespaces → Secrets, med adgang til codespacets repo, og genstart codespacet). Alternativt gemmes den i en fil, kun du kan læse: `read -rs -p 'EODHD-nøgle: ' K && mkdir -p ~/.config/vibetrad && printf %s "$K" > ~/.config/vibetrad/eodhd_key && chmod 600 ~/.config/vibetrad/eodhd_key && unset K && echo` (nøglen vises ikke, mens du indsætter den).
+
+## FRED (makrotal fra St. Louis Fed)
+
+`runner/fred.py` henter før agenterne starter en fast pakke officielle amerikanske makroserier og tester dermed `FRED_API_KEY` i hver kørsel, også i en tørkørsel:
+
+| Serie | Hvad | Brugt til |
+|---|---|---|
+| `DGS10`, `DGS2` | US 10- og 2-årig statsrente | Renteniveau, diskontering |
+| `T10Y2Y` | Rentekurven 10 år − 2 år | Recessionssignal (negativ = inverteret) |
+| `DFF` | Effektiv Fed funds-rente | Pengepolitik |
+| `VIXCLS` | VIX | Markedets forventede volatilitet |
+| `BAMLH0A0HYM2` | US high yield-kreditspænd | Risikoappetit, stress |
+| `DEXSDUS` | USD/SEK (Fed H.10, ugentlig udgivelse) | Valutarisiko på de amerikanske aktier |
+
+- Seneste værdi, datoen og ændringen over ca. en måned kommer som tabellen **"Makro (FRED)"** i alle agenters instruks, ved siden af datatjekkets facit. En serie markeres "forældet", hvis den er ældre end 7 dage (USD/SEK: 16 dage).
+- `get_macro_series` (Vibe-Tradings eget FRED-værktøj) gives til makro-desken, risikoudvalgets regime-agent og CIO'en med en kort guide til nyttige serier. Afviser FRED nøglen i nøgletjekket, tilføjes værktøjet ikke.
+- GitHub-loggen viser fx `FRED: ja, nøglen virker (7 af 7 serier, 7 kald · US 10-årig statsrente 4,12 % pr. 14/10/2026)`, `FRED: nej (secret FRED_API_KEY mangler)` eller `FRED: nøglen virker ikke (forkert nøgle)`.
+- En afvist nøgle stopper efter første kald, et nedbrud efter to serier i træk. Nøglen fjernes fra alle fejlbeskeder og logs. Snapshot og fejl ligger krypteret i rapporten (`fred`).
 
 ## Uger og datoer
 
@@ -132,7 +150,7 @@ Sættes under Settings → Secrets and variables → Actions → **Variables** e
 
 1. Opret repoet (Public) og push indholdet.
 2. Secrets: `ANTHROPIC_API_KEY`, `VT_RESULTS_PASSPHRASE` (mindst 16 tegn, gem den i en adgangskodemanager) og `VT_PORTFOLIO` (én linje JSON fra Vibetrad → Ugerapport → Opsætning → Kopiér VT_PORTFOLIO).
-   Anbefalet: `EODHD_API_KEY` (eodhd.com → Settings → API token) til datatjekket og agenterne. Valgfri: `FRED_API_KEY` (gratis på fred.stlouisfed.org) til makro-desken.
+   Anbefalet: `EODHD_API_KEY` (eodhd.com → Settings → API token) til datatjekket og agenterne. Valgfri: `FRED_API_KEY` (gratis på fred.stlouisfed.org) til makro-facit og `get_macro_series`.
 3. Actions → Vibetrad ugekørsel → Run workflow med *Tørkørsel* for at teste kæden gratis.
 
 ## Nordnet-handelshistorik til Shadow Account
@@ -157,7 +175,7 @@ Opdatér `VT_PORTFOLIO` (Kopiér VT_PORTFOLIO i Vibetrad → `gh secret set VT_P
 
 ```bash
 pip install "cryptography>=42" pyyaml pytest pandas
-python -m pytest -q                      # 93 tests (EODHD-integrationstesten kører kun, hvor vibe-trading-ai er installeret)
+python -m pytest -q                      # 106 tests (EODHD-integrationstesten kører kun, hvor vibe-trading-ai er installeret)
 VT_PORTFOLIO="$(cat runner/portfolio.example.json)" VT_RESULTS_PASSPHRASE=0123456789abcdef \
   python runner/run_week.py --dry-run --event workflow_dispatch --results /tmp/vt-results
 ```

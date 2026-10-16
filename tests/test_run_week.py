@@ -258,7 +258,7 @@ def run_main(tmp_path, *extra, **env_over):
     base = {k: v for k, v in os.environ.items() if not k.startswith(("VT_", "GITHUB_", "ANTHROPIC"))}
     env = {**base, "VT_PORTFOLIO": json.dumps(PORTFOLIO), "VT_RESULTS_PASSPHRASE": PASS, "VT_SCHEDULE": "on",
            "VT_PBKDF2_ITER": "1000", "GITHUB_OUTPUT": str(tmp_path / "out.txt"), "EODHD_API_KEY": "",
-           "EODHD_API_TOKEN": "", "VT_DATATJEK_VT": "off", **env_over}
+           "EODHD_API_TOKEN": "", "FRED_API_KEY": "", "VT_DATATJEK_VT": "off", **env_over}
     env.pop("ANTHROPIC_API_KEY", None)
     return subprocess.run([sys.executable, str(ROOT / "runner" / "run_week.py"), "--results", str(tmp_path / "results"),
                            "--dry-run", *extra], capture_output=True, text=True, env=env, timeout=120)
@@ -496,3 +496,86 @@ def test_eodhd_tool_is_not_promised_when_install_failed(tmp_path, monkeypatch):
     rw.prepare_shellfree_presets(tmp_path / "dst2", src, eodhd_ready=True)
     (a,) = yaml.safe_load((tmp_path / "dst2" / "risk_committee.yaml").read_text())["agents"]
     assert "get_eodhd_data" in a["tools"]
+
+
+# --- FRED -------------------------------------------------------------------
+FRED_KEY = "abcdef0123456789abcdef0123456789"
+
+
+def test_dry_run_reports_missing_fred_key(tmp_path):
+    p = run_main(tmp_path, "--event", "workflow_dispatch", "--now", "2026-10-15T12:00")
+    assert p.returncode == 0, p.stderr
+    assert "FRED: nej (secret FRED_API_KEY mangler)" in p.stdout
+    data = rw.decrypt(json.loads((tmp_path / "results" / "latest.enc.json").read_text()), PASS)
+    assert data["fred"]["key"] is False and data["fred"]["calls"] == 0
+
+
+def test_dry_run_checks_fred_against_fake_server_and_key_never_leaks(tmp_path):
+    import http.server
+    import threading
+    import urllib.parse
+
+    seen = []
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            u = urllib.parse.urlparse(self.path)
+            q = dict(urllib.parse.parse_qsl(u.query))
+            seen.append((u.path, q))
+            body = {"observations": [{"date": "2026-09-10", "value": "4.00"}, {"date": "2026-10-14", "value": "4.12"}]}
+            raw = json.dumps(body).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        p = run_main(tmp_path, "--event", "workflow_dispatch", "--now", "2026-10-15T12:00",
+                     FRED_API_KEY=FRED_KEY, FRED_BASE_URL=f"http://127.0.0.1:{srv.server_address[1]}")
+    finally:
+        srv.shutdown()
+    assert p.returncode == 0, p.stderr
+    log = p.stdout + p.stderr
+    assert "FRED: ja, nøglen virker (7 af 7 serier, 7 kald · US 10-årig statsrente 4,12 % pr. 14/10/2026)" in log
+    assert FRED_KEY not in log
+    assert {path for path, _ in seen} == {"/series/observations"} and all(q["api_key"] == FRED_KEY for _, q in seen)
+    assert seen[0][1]["observation_end"] == "2026-10-15"
+    res = tmp_path / "results"
+    data = rw.decrypt(json.loads((res / "latest.enc.json").read_text()), PASS)
+    assert data["fred"]["ok"] is True and data["fred"]["series"][0]["value"] == 4.12
+    assert FRED_KEY not in json.dumps(data) and FRED_KEY not in (res / "index.json").read_text()
+
+
+def test_fred_tool_for_regime_agent_and_cio_with_guidance_and_brief(tmp_path, monkeypatch):
+    import yaml
+    monkeypatch.setenv("FRED_API_KEY", FRED_KEY)
+    monkeypatch.delenv("EODHD_API_KEY", raising=False)
+    monkeypatch.delenv("EODHD_API_TOKEN", raising=False)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "risk_committee.yaml").write_text(yaml.safe_dump({"name": "risk_committee", "agents": [
+        {"id": "drawdown_analyst", "system_prompt": "dd", "tools": ["get_market_data"]},
+        {"id": "regime_detector", "system_prompt": "regime", "tools": ["get_market_data"]}]}))
+    (src / "portfolio_review_board.yaml").write_text(yaml.safe_dump({"name": "portfolio_review_board", "agents": [
+        {"id": "chief_investment_officer", "system_prompt": "CIO.", "tools": ["read_file"]}]}))
+    brief = "## Vibetrad datatjek\n\n## Makro (FRED, St. Louis Fed) pr. 15/10/2026\n| a |"
+    rw.prepare_shellfree_presets(tmp_path / "dst", src, brief=brief)
+    dd, regime = yaml.safe_load((tmp_path / "dst" / "risk_committee.yaml").read_text())["agents"]
+    (cio,) = yaml.safe_load((tmp_path / "dst" / "portfolio_review_board.yaml").read_text())["agents"]
+    assert "get_macro_series" in regime["tools"] and "Macro data (FRED" in regime["system_prompt"]
+    assert "get_macro_series" not in dd["tools"] and "Macro data (FRED" not in dd["system_prompt"]
+    assert "get_macro_series" in cio["tools"] and "DEXSDUS" in cio["system_prompt"]
+    assert all("Makro (FRED" in a["system_prompt"] for a in (dd, regime, cio))  # facit til alle
+    rw.prepare_shellfree_presets(tmp_path / "dst2", src, fred_ready=False)  # nøglen afvist i nøgletjekket
+    _, regime2 = yaml.safe_load((tmp_path / "dst2" / "risk_committee.yaml").read_text())["agents"]
+    assert "get_macro_series" not in regime2["tools"] and "Macro data (FRED" not in regime2["system_prompt"]
+    monkeypatch.delenv("FRED_API_KEY")
+    rw.prepare_shellfree_presets(tmp_path / "dst3", src)
+    (cio3,) = yaml.safe_load((tmp_path / "dst3" / "portfolio_review_board.yaml").read_text())["agents"]
+    assert "get_macro_series" not in cio3["tools"]
