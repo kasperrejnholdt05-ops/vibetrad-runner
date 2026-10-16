@@ -57,7 +57,7 @@ Der sammenlignes på seneste afsluttede handelsdag (Yahoo leverer også dagens u
 Begivenheder, der ikke er datafejl, vises for sig: estimeret udløb af lock-up for nyligt børsnoterede selskaber (IPO + 180 dage, fx SpaceX ca. 09/12/2026) samt udbytter og splits.
 
 Resultatet bruges tre steder:
-- **Alle agenter** får en kompakt facit-tabel i deres instruks: kurs, ugeafkast i lokal valuta og i SEK, værdi i SEK, vægt efter markedsværdi og verificeret regnskabsdato. Under tabellen står porteføljens uge i SEK inkl. valutaeffekt (fra fredagens lukkekurs og valutakurs), resultatet siden køb for aktierne alene (kontanten er ikke med) og, når et månedligt indskud er oplyst, hvor mange måneders indskud hver overvægtet position kræver for at nå sit mål ved uændrede kurser og uden salg. Agenterne skal altså ikke selv regne disse tal.
+- **Alle agenter** får en kompakt facit-tabel i deres instruks: kurs, ugeafkast i lokal valuta og i SEK, værdi i SEK, vægt efter markedsværdi og verificeret regnskabsdato. Under tabellen står porteføljens uge i SEK inkl. valutaeffekt (fra fredagens lukkekurs og valutakurs), resultatet siden køb for aktierne alene (kontanten er ikke med) og, når et månedligt indskud er oplyst, hvor mange måneders indskud hver overvægtet position kræver for at nå sit mål ved uændrede kurser og uden salg. Til sidst står markedsværdien for hele selskabet (alle aktieklasser, fra EODHD med Vibe-Trading som reserve), så ingen agent regner Alphabets værdi ud fra A-aktierne alene. Agenterne skal altså ikke selv regne disse tal. Facit er højst 5 600 tegn og afkortes ved et linjeskift.
 - **CIO'en** får afvigelserne og skal skrive et afsnit "Datakvalitet".
 - **Valuta-afvigelser** forklares i selve advarslen (begge kilders kurs, og at kilderne lukker valutadøgnet på forskellige tidspunkter). FRED's ugentlige DEXSDUS indgår ikke i sammenligningen og er mærket "kun makrokontekst".
 - **Planen**: regnskabsdesken bruger de krydstjekkede datoer.
@@ -133,7 +133,7 @@ En agent kan afslutte uden at levere andet end en plan ("Executing the data-gath
 
 ## Symboler og gebyrer
 
-Alle agenter med data-værktøjer får at vide, at amerikanske aktier og ETF'er skal skrives med `.US` (fx `ACWI.US`). Uden suffix tolker Vibe-Trading 0.1.16 symbolet som en kinesisk A-aktie, og kaldet fejler. De må heller ikke citere tal fra et kald, der fejlede, eller angive en kurtagesats, der ikke står i deres instruks.
+Alle agenter med data-værktøjer får at vide, at amerikanske aktier og ETF'er skal skrives med `.US` (fx `ACWI.US`). Uden suffix tolker Vibe-Trading 0.1.16 symbolet som en kinesisk A-aktie, og kaldet fejler. De må heller ikke citere tal fra et kald, der fejlede, eller angive en kurtagesats, der ikke står i deres instruks. Markedsværdi tages fra facit og regnes aldrig ud fra én aktieklasses antal aktier.
 
 ## Vægtpolitik
 
@@ -203,7 +203,7 @@ Opdatér `VT_PORTFOLIO` (Kopiér VT_PORTFOLIO i Vibetrad → `gh secret set VT_P
 
 ```bash
 pip install "cryptography>=42" pyyaml pytest pandas
-python -m pytest -q                      # 133 tests (EODHD-integrationstesten kører kun, hvor vibe-trading-ai er installeret)
+python -m pytest -q                      # 134 tests (EODHD-integrationstesten kører kun, hvor vibe-trading-ai er installeret)
 VT_PORTFOLIO="$(cat runner/portfolio.example.json)" VT_RESULTS_PASSPHRASE=0123456789abcdef \
   python runner/run_week.py --dry-run --event workflow_dispatch --results /tmp/vt-results
 ```

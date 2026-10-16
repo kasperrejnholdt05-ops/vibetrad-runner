@@ -130,6 +130,8 @@ Always write US stocks and ETFs with the .US suffix (ACWI.US, IEF.US, GLD.US, VN
 Vibe-Trading treats the symbol as a China A-share and the call fails ("no price data"). Nordic listings: NOVO-B.CO,
 INVE-B.ST. If a tool call fails or returns no data, say so in the report and never present a number from that call.
 Never state a brokerage fee (courtage) or FX fee unless it is given in your instructions.
+Market capitalisation: use the whole-company figure from the Vibetrad facit. Never compute it from one share class's
+share count (Alphabet has A, B and C shares, so GOOGL alone is far too low).
 """
 # Agenter med disse værktøjer henter kurser og får symbol-instruksen.
 SYMBOL_TOOLS = {"get_market_data", "portfolio_risk_xray", "backtest", "technical_indicators", "quantlib_call", "etf_holdings",
