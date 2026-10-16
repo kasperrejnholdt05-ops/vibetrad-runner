@@ -42,6 +42,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 import datatjek as dtj  # noqa: E402  (krydstjek Vibe-Trading × EODHD)
 import eodhd as eo  # noqa: E402  (EODHD-klient og -integration i Vibe-Trading)
+import fred as fr  # noqa: E402  (FRED: nøgletjek og makro-facit)
 
 STO = ZoneInfo("Europe/Stockholm")
 SCHEMA = 1
@@ -86,8 +87,8 @@ SPACEX_HINT = (" Selskabet er nyligt børsnoteret med kort kurs- og regnskabshis
 EXTRA_TOOLS = {
     "*": {"*data*": ["get_eodhd_data"]},
     "portfolio_review_board": {"chief_investment_officer": ["report_audit", "financial_rigor", "get_market_data",
-                                                            "get_eodhd_data", "etf_holdings"]},
-    "risk_committee": {"*data*": ["portfolio_risk_xray"]},
+                                                            "get_eodhd_data", "etf_holdings", "get_macro_series"]},
+    "risk_committee": {"*data*": ["portfolio_risk_xray"], "regime_detector": ["get_macro_series"]},
     "earnings_research_desk": {"*": ["get_stock_profile", "get_sec_filings", "get_financial_statements",
                                      "get_stock_news", "get_eodhd_data"]},
     "macro_rates_fx_desk": {"*": ["get_macro_series", "get_eodhd_data"]},
@@ -110,6 +111,15 @@ calendar (Fed/Riksbank), government bond yields (US10Y.GBOND, SE10Y.GBOND), FX (
 European stocks. If two sources disagree by more than 1 %, report both numbers and the date.
 The `backtest` tool does not model Nordic/European markets in this Vibe-Trading version (it would treat them as China
 A-shares): never backtest such symbols; use their US listing/ETF or compute returns from `get_eodhd_data` eod data.
+"""
+FRED_GUIDANCE = """
+
+## Macro data (FRED, Vibetrad)
+`get_macro_series` returns official US macro series from the St. Louis Fed. Useful series_id values: DGS10 and DGS2
+(Treasury yields), T10Y2Y (curve), DFF (effective fed funds), VIXCLS (equity volatility), BAMLH0A0HYM2 (US high-yield
+credit spread), DEXSDUS (SEK per USD, weekly release), CPIAUCSL (CPI), UNRATE (unemployment). Always pass start_date
+(e.g. two years back) to keep the output small. FRED is US data: for Swedish or German rates use get_eodhd_data
+(SE10Y.GBOND, DE10Y.GBOND). The "Makro (FRED)" table in your instructions is this run's reference snapshot.
 """
 EXTRA_PROMPT = {"portfolio_review_board": {"chief_investment_officer": """
 
@@ -534,7 +544,7 @@ def _extra_tools_for(preset: str, agent: dict) -> list[str]:
 
 
 def prepare_shellfree_presets(dst: Path, src: Path | None = None, brief: str = "",
-                              eodhd_ready: bool | None = None) -> list[str]:
+                              eodhd_ready: bool | None = None, fred_ready: bool | None = None) -> list[str]:
     """Kopiér Vibe-Tradings presets til brugermappen med kvant-værktøjer i stedet for shell.
 
     Vibe-Trading læser brugermappen før de indbyggede presets, så samme navne bruges.
@@ -564,11 +574,16 @@ def prepare_shellfree_presets(dst: Path, src: Path | None = None, brief: str = "
             add_tools = _extra_tools_for(f.stem, agent)
             if eodhd_ready is False:  # EODHD blev ikke koblet på: lov ikke agenterne et værktøj, de ikke har
                 add_tools = [t for t in add_tools if t != "get_eodhd_data"]
+            if fred_ready is False:  # FRED afviste nøglen eller svarede ikke i nøgletjekket
+                add_tools = [t for t in add_tools if t != "get_macro_series"]
             if add_tools:
                 agent["tools"] = list(agent.get("tools") or []) + add_tools
                 touched = True
             if "get_eodhd_data" in (agent.get("tools") or []):
                 agent["system_prompt"] = str(agent.get("system_prompt", "")).rstrip() + DATA_GUIDANCE
+                touched = True
+            if "get_macro_series" in (agent.get("tools") or []):
+                agent["system_prompt"] = str(agent.get("system_prompt", "")).rstrip() + FRED_GUIDANCE
                 touched = True
             if brief:
                 agent["system_prompt"] = str(agent.get("system_prompt", "")).rstrip() + "\n\n" + brief.strip() + "\n"
@@ -945,6 +960,17 @@ def main(argv: list[str] | None = None) -> int:
         else:
             con.say("Datatjek: kunne ikke gennemføres (detaljer krypteret i rapporten)")
 
+    # FRED: tester nøglen (også i en tørkørsel) og giver alle agenter et makro-facit.
+    fred_snap: dict | None = None
+    with quiet_fds(log_path):
+        try:
+            fred_snap = fr.snapshot(ref.date().isoformat())
+        except Exception as exc:  # noqa: BLE001 - FRED må aldrig stoppe kørslen
+            errors.append({"stage": "fred", "type": type(exc).__name__, "message": fr.redact(str(exc))[:2000],
+                           "trace": fr.redact(traceback.format_exc())[-4000:]})
+    con.say(fr.status_line(fred_snap))
+    fred_ready = (bool(fred_snap.get("ok")) if fred_snap.get("key") else None) if fred_snap else None
+
     horizon = int(os.environ.get("VT_EARNINGS_DAYS", "14"))
     with quiet_fds(log_path):  # yfinance skriver advarsler, der kan nævne symboler
         verified = dtj.verified_reports(datacheck)
@@ -965,9 +991,10 @@ def main(argv: list[str] | None = None) -> int:
         try:
             runtime, store, vt_version = make_runtime(args.dry_run)
             if not args.dry_run:
-                shellfree = prepare_shellfree_presets(Path.home() / ".vibe-trading" / "swarm" / "presets",
-                                                      brief=dtj.agent_brief(datacheck),
-                                                      eodhd_ready=bool(eodhd_info.get("tool") and eodhd_info.get("key")))
+                brief = "\n\n".join(b for b in (dtj.agent_brief(datacheck), fr.agent_brief(fred_snap)) if b)
+                shellfree = prepare_shellfree_presets(Path.home() / ".vibe-trading" / "swarm" / "presets", brief=brief,
+                                                      eodhd_ready=bool(eodhd_info.get("tool") and eodhd_info.get("key")),
+                                                      fred_ready=fred_ready)
         except Exception as exc:
             errors.append({"stage": "init", "type": type(exc).__name__, "message": str(exc)[:2000],
                            "trace": traceback.format_exc()[-4000:]})
@@ -1021,7 +1048,7 @@ def main(argv: list[str] | None = None) -> int:
     tin = sum(r.get("tokens_in", 0) for r in runs)
     tout = sum(r.get("tokens_out", 0) for r in runs)
     generated = dt.datetime.now(STO).isoformat(timespec="seconds")
-    log_tail = eo.redact(log_path.read_text("utf-8", "replace")[-6000:]) if log_path.exists() else ""
+    log_tail = fr.redact(eo.redact(log_path.read_text("utf-8", "replace")[-6000:])) if log_path.exists() else ""
 
     payload = {
         "schema": SCHEMA, "generated_at": generated, "week": week, "status": status,
@@ -1032,7 +1059,7 @@ def main(argv: list[str] | None = None) -> int:
                       "holdings": portfolio["holdings"], "cash_sek": portfolio["cash_sek"],
                       "weights_cost": cost_weights(portfolio)},
         "upcoming_reports": reports, "plan": [{"preset": s["preset"], "reason": s["reason"]} for s in plan],
-        "datacheck": datacheck, "eodhd": eodhd_info,
+        "datacheck": datacheck, "eodhd": eodhd_info, "fred": fred_snap,
         "runs": runs,
         "totals": {"tokens_in": tin, "tokens_out": tout, "duration_s": round(time.monotonic() - t0),
                    "est_cost_usd": round(sum(r.get("est_cost_usd", 0) for r in runs), 2),

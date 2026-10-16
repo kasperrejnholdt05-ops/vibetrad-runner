@@ -698,8 +698,8 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
         if e["status"] in ("warn", "fail"):
             issues.append(f"{LABEL[e['status']]} regnskab {e['ticker']}: {'; '.join(e['notes'])}")
     if pstatus in ("warn", "fail"):
-        issues.append(f"{LABEL[pstatus]} porteføljeværdi: Vibe-Trading {value.get('vibe_trading')} SEK, "
-                      f"EODHD {value.get('eodhd')} SEK")
+        issues.append(f"{LABEL[pstatus]} porteføljeværdi: Vibe-Trading {_nf(value.get('vibe_trading'), 0)} SEK, "
+                      f"EODHD {_nf(value.get('eodhd'), 0)} SEK")
 
     states = ([r["status"] for r in rows + fx_rows] + [f["status"] for f in fundamentals]
               + [e["status"] for e in earnings] + [pstatus])
