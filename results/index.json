@@ -2,6 +2,26 @@
  "schema": 1,
  "weeks": [
   {
+   "run_id": "2026-W42_20261016-1351_38887059261",
+   "week_id": "2026-W42",
+   "week_label": "Uge 42 · 12/10/2026–15/10/2026 (ugen til dato)",
+   "generated_at": "2026-10-16T13:51:02+02:00",
+   "status": "ok",
+   "runs": 5,
+   "completed": 5,
+   "dry_run": false,
+   "presets": [
+    "risk_committee",
+    "earnings_research_desk",
+    "etf_allocation_desk",
+    "investment_committee",
+    "portfolio_review_board"
+   ],
+   "week_to": "2026-10-15",
+   "cost_usd": 22.61,
+   "datacheck": "ADVARSEL"
+  },
+  {
    "run_id": "2026-W42_20261016-1150_38883225122",
    "week_id": "2026-W42",
    "week_label": "Uge 42 · 12/10/2026–15/10/2026 (ugen til dato)",
@@ -55,5 +75,5 @@
    ]
   }
  ],
- "latest": "2026-W42_20261016-1150_38883225122"
+ "latest": "2026-W42_20261016-1351_38887059261"
 }
