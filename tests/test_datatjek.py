@@ -15,11 +15,12 @@ import run_week as rw  # noqa: E402
 
 REF = dt.datetime(2026, 10, 15, 12, 0, tzinfo=rw.STO)
 WEEK = rw.week_window(REF)  # uge 42 til dato: 12/10–14/10 (seneste US-lukning)
-P = rw.load_portfolio("""{"account":"ISK Nordnet","currency":"SEK","holdings":[
+RAW_P = """{"account":"ISK Nordnet","currency":"SEK","holdings":[
   {"ticker":"SPCX.US","name":"SpaceX","qty":13,"cost_sek":21480,"max_weight":10},
   {"ticker":"GOOGL.US","name":"Alphabet A","qty":3,"cost_sek":9315,"max_weight":10}],
   "cash_sek":2615,"watchlist":[{"ticker":"NOVO-B.CO","note":"aaben limitordre 5 stk, regnskab 04/11/2026"}],
-  "next_reports":{"GOOGL.US":"2026-10-28","SPCX.US":"2026-11-03"}}""")
+  "next_reports":{"GOOGL.US":"2026-10-28","SPCX.US":"2026-11-03"}}"""
+P = rw.load_portfolio(RAW_P)
 
 DAYS = ["2026-10-02", "2026-10-05", "2026-10-06", "2026-10-07", "2026-10-08", "2026-10-09", "2026-10-12",
         "2026-10-13", "2026-10-14"]
@@ -436,3 +437,32 @@ def test_market_cap_is_whole_company_and_full_brief_fits():
         assert must in b, must
     cut = dtj.agent_brief(dc, limit=600)
     assert cut.endswith("[… afkortet]") and "\n[… afkortet]" in cut and len(cut) <= 600 + 20
+
+
+def test_watchlist_report_date_without_year_and_copied_eodhd_dates():
+    """Testen 19/10: 'Regnskab 04/11' (uden år) på overvågningslisten blev ikke læst, og Vibetrad kopierer
+    EODHD's dato ind i next_reports, så EODHD talte dobbelt."""
+    note = {"ticker": "NOVO-B.CO", "note": "Åben limitordre: 5 stk à 318,40 DKK. Regnskab 04/11; alarm under 318,40"}
+    assert dtj.portfolio_dates({"as_of": "19/10/2026", "watchlist": [note]}) == {"NOVO-B.CO": "2026-11-04"}
+    late = {"ticker": "X.ST", "note": "Regnskab 05/02"}
+    assert dtj.portfolio_dates({"watchlist": [late]}, dt.date(2026, 12, 20)) == {"X.ST": "2027-02-05"}
+    assert dtj.portfolio_dates({"watchlist": [{"ticker": "Y.ST", "note": "Regnskab 31/02"}]}, dt.date(2026, 10, 19)) == {}
+    # Et nyligt overstået regnskab (inden for 7 dage) flyttes ikke et år frem, så det ikke ligner en fremtidig dato
+    assert dtj.portfolio_dates({"watchlist": [{"ticker": "Z.ST", "note": "Regnskab 15/10"}]}, dt.date(2026, 10, 19)) == {"Z.ST": "2026-10-15"}
+    # Fuld kørsel: Novo får porteføljens dato fra noten
+    p = rw.load_portfolio(json.dumps(dict(json.loads(RAW_P), watchlist=[note])))
+    vt, eod = sources()
+    dc = dtj.run(p, WEEK, REF, vt=vt, eod=eod)
+    novo = next(e for e in dc["earnings"] if e["ticker"] == "NOVO-B.CO")
+    assert novo["portfolio"] == "2026-11-04" and novo["agree"] == 3
+    # GOOGL-datoen er hentet fra EODHD af Vibetrad: den tæller ikke som egen kilde
+    p2 = rw.load_portfolio(json.dumps(dict(json.loads(RAW_P), next_reports_source={"GOOGL.US": "eodhd", "SPCX.US": "hack"})))
+    assert p2["next_reports_source"] == {"GOOGL.US": "eodhd"}
+    dc2 = dtj.run(p2, WEEK, REF, vt=vt, eod=eod)
+    base = next(e for e in run()["earnings"] if e["ticker"] == "GOOGL.US")
+    g = next(e for e in dc2["earnings"] if e["ticker"] == "GOOGL.US")
+    assert base["agree"] == 3 and g["agree"] == 2 and g["portfolio"] == "2026-10-28" and g["portfolio_source"] == "eodhd"
+    # Svarer EODHD ikke, er kopien det bedste bud og tæller igen
+    vt3, eod3 = sources(earn={})
+    g3 = next(e for e in dtj.run(p2, WEEK, REF, vt=vt3, eod=eod3)["earnings"] if e["ticker"] == "GOOGL.US")
+    assert g3["verified"] == "2026-10-28" and g3["agree"] == 2

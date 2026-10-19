@@ -35,7 +35,7 @@ Før agenterne starter, henter `runner/datatjek.py` de samme tal fra to uafhæng
 | **Vibe-Trading (HKUDS)** | Kurser, valutakurser | Præcis den loader-kæde, agenternes `get_market_data` bruger (Yahoo → Stooq → … → yfinance). EODHD holdes ude af kæden, så sammenligningen er ægte. |
 | | Navn, valuta, markedsværdi, P/E, regnskabsdato | Vibe-Tradings egen Yahoo-klient (`quoteSummary`), med yfinance som reserve |
 | **EODHD** | Kurser (justeret), valutakurser, nøgletal, IPO-dato, regnskabskalender (før/efter åbning), udbytter og splits | EODHD's REST-API (secret `EODHD_API_KEY`) |
-| **Porteføljen** | Regnskabsdatoer | `next_reports` og noter på overvågningslisten i `VT_PORTFOLIO` |
+| **Porteføljen** | Regnskabsdatoer | `next_reports` og noter på overvågningslisten i `VT_PORTFOLIO` ("Regnskab 04/11" uden år betyder næste gang datoen kommer). `next_reports_source` siger, hvor datoen kommer fra; en dato, Vibetrad har hentet fra EODHD, tæller ikke som egen kilde, når EODHD selv svarer |
 | **Porteføljen** | Opgørelsesdato | `as_of` i `VT_PORTFOLIO`: ADVARSEL, når den er over 7 dage gammel |
 | **EODHD** | Kort kurshistorik | IPO-dato under et år siden: antal handelsdage og største fald fra top til bund kommer i agenternes facit, så risikotal for papiret omtales som usikre |
 
@@ -205,7 +205,7 @@ Opdatér `VT_PORTFOLIO` (Kopiér VT_PORTFOLIO i Vibetrad → `gh secret set VT_P
 
 ```bash
 pip install "cryptography>=42" pyyaml pytest pandas
-python -m pytest -q                      # 144 tests (EODHD-integrationstesten kører kun, hvor vibe-trading-ai er installeret)
+python -m pytest -q                      # 146 tests (EODHD-integrationstesten kører kun, hvor vibe-trading-ai er installeret)
 VT_PORTFOLIO="$(cat runner/portfolio.example.json)" VT_RESULTS_PASSPHRASE=0123456789abcdef \
   python runner/run_week.py --dry-run --event workflow_dispatch --results /tmp/vt-results
 ```

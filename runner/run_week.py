@@ -305,6 +305,9 @@ class PortfolioError(ValueError):
     pass
 
 
+NEXT_REPORT_SOURCES = ("eodhd", "manuel", "brief")
+
+
 def load_portfolio(raw: str | None) -> dict:
     if not raw or not raw.strip():
         raise PortfolioError("VT_PORTFOLIO mangler – opret secret'en med JSON fra Vibetrad-siden")
@@ -341,6 +344,11 @@ def load_portfolio(raw: str | None) -> dict:
     p["courtage_class"] = cc or None
     p.setdefault("watchlist", [])
     p.setdefault("next_reports", {})
+    # Hvor hver regnskabsdato i next_reports kommer fra (Vibetrad fra 19/10/2026): "eodhd" = hentet fra EODHD,
+    # "manuel" = skrevet ind af Kasper, "brief" = Vibetrads kalender. En kopi af EODHD er ikke en egen kilde.
+    src = p.get("next_reports_source")
+    p["next_reports_source"] = ({str(k).strip().upper(): str(v).strip().lower() for k, v in src.items()
+                                 if str(v).strip().lower() in NEXT_REPORT_SOURCES} if isinstance(src, dict) else {})
     return p
 
 
@@ -367,7 +375,8 @@ def portfolio_text(p: dict) -> str:
         lines.append("- " + ", ".join(bits))
     if p.get("cash_sek"):
         note = f" ({p['cash_note']})" if p.get("cash_note") else ""
-        lines.append(f"- Kontant: {p['cash_sek']:,.0f} SEK{note}".replace(",", " "))
+        # Kun beløbet får mellemrum som tusindtalsskilletegn; noten beholder sine kommaer (318,40 DKK)
+        lines.append(f"- Kontant: {p['cash_sek']:,.0f}".replace(",", " ") + f" SEK{note}")
     if p.get("watchlist"):
         wl = "; ".join(f"{w.get('ticker')}: {w.get('note', '')}".strip(": ") for w in p["watchlist"] if isinstance(w, dict))
         lines.append(f"Overvågning/åbne ordrer: {wl}")

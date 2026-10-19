@@ -779,3 +779,14 @@ def test_cio_prompt_requires_disagreements_scenarios_and_falsifiers():
                 "delivered no report"):
         assert txt in cio, txt
     assert "never compare it with" in rw.FRED_GUIDANCE
+
+
+def test_cash_note_keeps_its_decimal_commas():
+    """Testen 19/10: '318,40 DKK' i kontantnoten blev til '318 40 DKK', fordi hele linjen fik kommaer skiftet ud."""
+    p = rw.load_portfolio(json.dumps({"holdings": [{"ticker": "AAA.US", "qty": 1, "cost_sek": 1000}], "cash_sek": 2615,
+                                      "cash_note": "Heraf 1 640 SEK reserveret til åben limitordre: Demo Pharma B, 5 stk à 318,40 DKK",
+                                      "next_reports_source": {"aaa.us": "EODHD", "BBB.US": "gæt"}}))
+    txt = rw.portfolio_text(p)
+    assert "- Kontant: 2 615 SEK (Heraf 1 640 SEK reserveret til åben limitordre: Demo Pharma B, 5 stk à 318,40 DKK)" in txt
+    assert p["next_reports_source"] == {"AAA.US": "eodhd"}
+    assert rw.load_portfolio(json.dumps({"holdings": [{"ticker": "A"}], "next_reports_source": "eodhd"}))["next_reports_source"] == {}

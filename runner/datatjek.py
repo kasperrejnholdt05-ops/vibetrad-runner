@@ -355,16 +355,31 @@ def instruments(p: dict) -> list[dict]:
     return out
 
 
-def portfolio_dates(p: dict) -> dict[str, str]:
+def portfolio_dates(p: dict, ref: dt.date | None = None) -> dict[str, str]:
+    """Porteføljens egne regnskabsdatoer: next_reports og noter på overvågningslisten. En note uden år
+    ("Regnskab 04/11") betyder næste gang datoen kommer, regnet fra kørslens dag (ellers opgørelsesdagen)."""
     dates: dict[str, str] = {}
     for t, d in (p.get("next_reports") or {}).items():
         if _date(d):
             dates[norm_ticker(t)] = _date(d)
+    base = ref
+    if base is None:
+        as_of = _date(p.get("as_of"))
+        base = dt.date.fromisoformat(as_of) if as_of else dt.date.today()
     for w in p.get("watchlist") or []:
-        if isinstance(w, dict) and w.get("ticker"):
-            m = re.search(r"regnskab\w*\s*:?\s*(\d{1,2}[/.\-]\d{1,2}[/.\-]\d{4})", str(w.get("note") or ""), re.I)
-            if m and _date(m.group(1)) and norm_ticker(w["ticker"]) not in dates:
-                dates[norm_ticker(w["ticker"])] = _date(m.group(1))
+        if not (isinstance(w, dict) and w.get("ticker")) or norm_ticker(w["ticker"]) in dates:
+            continue
+        m = re.search(r"regnskab\w*\s*:?\s*(\d{1,2})[/.\-](\d{1,2})(?:[/.\-](\d{4}))?(?!\d)", str(w.get("note") or ""), re.I)
+        if not m:
+            continue
+        day, month, year = int(m.group(1)), int(m.group(2)), m.group(3)
+        try:
+            when = dt.date(int(year), month, day) if year else dt.date(base.year, month, day)
+            if not year and when < base - dt.timedelta(days=7):
+                when = dt.date(base.year + 1, month, day)
+        except ValueError:  # fx 31/02
+            continue
+        dates[norm_ticker(w["ticker"])] = when.isoformat()
     return dates
 
 
@@ -679,7 +694,8 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
                         r["name"] = nm
 
     # Regnskabsdatoer: porteføljen × EODHD × Vibe-Trading (Yahoo)
-    pdates = portfolio_dates(p)
+    pdates = portfolio_dates(p, ref.date())
+    psrc = {norm_ticker(k): v for k, v in (p.get("next_reports_source") or {}).items()}
     stock_codes = [i["ticker"] for i in insts if i["kind"] not in ("etf", "fund") and i["role"] != "benchmark"]
     cal = (eod.earnings(stock_codes, (ref.date() - dt.timedelta(days=3)).isoformat(),
                         (ref.date() + dt.timedelta(days=horizon_days)).isoformat())
@@ -695,11 +711,17 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
             vt_all = []
         # Yahoo giver et vindue [fra, til], når datoen ikke er bekræftet: det tæller som enigt, hvis datoen ligger i det
         window = (vt_all[0], vt_all[-1]) if len(vt_all) >= 2 and vt_all[-1] > vt_all[0] else None
-        cand = {"portefølje": pdates.get(code) if (pdates.get(code) or "") >= ref_day else None,
+        p_date = pdates.get(code) if (pdates.get(code) or "") >= ref_day else None
+        cand = {"portefølje": p_date,
                 "EODHD": e_next["date"] if e_next else None,
                 "Vibe-Trading": vt_all[0] if vt_all and not window else None}
+        # Vibetrad henter selv datoen fra EODHD. Så er porteføljens dato en kopi og ikke en egen kilde,
+        # medmindre EODHD ikke svarer i denne kørsel (så er kopien det bedste bud)
+        if psrc.get(code) == "eodhd" and cand["EODHD"]:
+            cand["portefølje"] = None
         known = {k: v for k, v in cand.items() if v}
-        r: dict[str, Any] = {"ticker": code, "name": name, "portfolio": cand["portefølje"], "eodhd": cand["EODHD"],
+        r: dict[str, Any] = {"ticker": code, "name": name, "portfolio": p_date, "portfolio_source": psrc.get(code),
+                             "eodhd": cand["EODHD"],
                              "eodhd_when": (e_next or {}).get("when"), "eps_estimate": (e_next or {}).get("estimate"),
                              "vibe_trading": vt_all[0] if vt_all else None,
                              "vibe_trading_to": window[1] if window else None,
