@@ -1113,9 +1113,9 @@ class FakeRuntime:
 # ---------------------------------------------------------------------------
 # Rettelser i Vibe-Trading 0.1.16 (anvendes i processen, før SwarmRuntime kører)
 # ---------------------------------------------------------------------------
-# Kørslen 19/10/2026: hver worker overskrev ALLE værktøjsresultater undtagen de 3 nyeste med "[cleared]" i
-# hver iteration. Agenter, der hentede 5–6 kurser, mistede dermed tallene, før de skrev rapporten, og leverede
-# en plan eller gentog kaldene. Vibetrad beholder resultaterne, indtil de samlet fylder mere end budgettet, og
+# Fundet efter kørslen 19/10/2026: hver worker overskriver ALLE værktøjsresultater undtagen de 3 nyeste med
+# "[cleared]" i hver iteration. En agent, der henter 5–6 kurser, har mistet de første, før den skriver rapporten,
+# og må gentage kaldene eller skrive uden tallene. Vibetrad beholder resultaterne, indtil de samlet fylder mere end budgettet, og
 # rydder så de ældste ned til halvdelen (få ændringer → prompt-cachen holder), med en markør der siger, at
 # kaldet lykkedes.
 VT_TOOL_CONTEXT_CHARS = 40_000

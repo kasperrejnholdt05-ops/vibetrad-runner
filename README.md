@@ -147,7 +147,7 @@ Alle agenter får investorens rammer i deres instruks:
 - Ingen optioner, futures, short eller gearing. Afdækning med derivater foreslås ikke.
 - Reserveret kontant (fx til en åben ordre) kan ikke bruges til nye køb.
 
-CIO'en skal desuden kun foreslå fonde og ETF'er, der kan købes hos Nordnet. (Kørslen 19/10/2026 anbefalede ACWI.US og optionsafdækning, og ingen af delene kan bruges på en ISK hos Nordnet.)
+CIO'en skal desuden kun foreslå fonde og ETF'er, der kan købes hos Nordnet. (Kørslen 19/10/2026 anbefalede ACWI.US, som en privatkunde ikke kan købe hos Nordnet.)
 
 **Ledig kontant.** Runneren læser det reserverede beløb fra kontantnoten ("Heraf 2 400 SEK reserveret til åben limitordre", "Reserveret til ordre: 2 400 SEK", "2.400 kr. er bundet i ordren"). Kun beløb i SEK/kr tæller, så en limitkurs i DKK ignoreres. Et tal i `cash_reserved_sek` vinder over noten, og reservationen kan aldrig blive større end kontanten. Porteføljeteksten viser "Ledig til nye køb: … SEK", datatjekkets facit viser "heraf … reserveret, … ledig", og ETF- og fondsteamet får kun indskuddet og den ledige kontant at fordele.
 
@@ -163,7 +163,7 @@ Risikoudvalget regner altid tabet i SEK i fire scenarier: den største position 
 
 Runneren retter to ting i Vibe-Trading, mens kørslen står på. Der ændres ikke i den installerede pakke. Status står i GitHub-loggen ("Vibe-Trading-rettelser: …"), i rapporten (`vibe_trading_patches`) og i Vibetrad under Model.
 
-- **Værktøjsresultater bevares.** I 0.1.16 overskriver hver agent alle værktøjsresultater undtagen de 3 nyeste med `[cleared]`, i hver iteration. En agent, der henter seks kurser, har dermed mistet de tre første, før den skriver. I kørslen 19/10/2026 førte det til planer i stedet for rapporter og til gentagne kald. Runneren erstatter den ene blok i `_run_worker_impl`: resultaterne bevares, indtil de tilsammen fylder over 40 000 tegn (`VT_TOOL_CONTEXT_CHARS`). Så ryddes de ældste ned til halvdelen, og de 3 nyeste røres aldrig. Ryddede resultater får en markør, der siger, at kaldet lykkedes. Det giver få ændringer i beskederne, så prompt-cachen holder. Hvis Vibe-Tradings kode ændrer sig, så blokken ikke findes, bruges originalen, og loggen siger "ikke anvendt".
+- **Værktøjsresultater bevares.** I 0.1.16 overskriver hver agent alle værktøjsresultater undtagen de 3 nyeste med `[cleared]`, i hver iteration. En agent, der henter seks kurser, har dermed mistet de tre første, før den skriver, og må gentage kaldene eller skrive uden tallene. Runneren erstatter den ene blok i `_run_worker_impl`: resultaterne bevares, indtil de tilsammen fylder over 40 000 tegn (`VT_TOOL_CONTEXT_CHARS`). Så ryddes de ældste ned til halvdelen, og de 3 nyeste røres aldrig. Ryddede resultater får en markør, der siger, at kaldet lykkedes. Det giver få ændringer i beskederne, så prompt-cachen holder. Hvis Vibe-Tradings kode ændrer sig, så blokken ikke findes, bruges originalen, og loggen siger "ikke anvendt".
 - **`temperature` udelades for Claude-modeller af 5. generation** (`claude-sonnet-5`, `claude-opus-5-5` …), som afviser feltet. Vibe-Trading opdager det ellers først ved den første fejl, og i kørslen 19/10/2026 fejlede de parallelle agenters første kald derfor. `VT_TEMPERATURE=on|off` tvinger valget.
 
 En integrationstest kører den rigtige ReAct-løkke i Vibe-Trading med en falsk LLM og otte kurskald: med rettelsen ser det sidste kald alle otte resultater, og i 0.1.16 uden rettelsen er fem af dem `[cleared]`.
