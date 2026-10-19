@@ -54,7 +54,7 @@ Før agenterne starter, henter `runner/datatjek.py` de samme tal fra to uafhæng
 
 Der sammenlignes på seneste afsluttede handelsdag (Yahoo leverer også dagens ufærdige bar, EODHD ikke). Yahoo daterer valutakurser en dag for tidligt (UTC-tidsstempel ved London-midnat): det opdages og justeres automatisk, og porteføljens værdi regnes for begge kilder med samme valutakurs, så kun kursforskelle tæller. Yahoos regnskabsvindue (fx 26/10–30/10, når datoen ikke er bekræftet) tæller som enigt, hvis facit ligger i vinduet. London-kurser fra EODHD i pence omregnes til pund. Mangler antal for en beholdning, beregnes vægtene ikke, og det står som ADVARSEL.
 
-**Regnskabsdato ved uenighed.** Flest kilder vinder. Står det lige, vinder en bekræftet dato: Yahoo siger eksplicit "ikke et estimat", eller datoen er skrevet ind i Vibetrad (`next_reports_source: "manuel"`, typisk fra selskabets IR-side). Ellers vinder den tidligste dato: hellere forberedt for tidligt end overrasket. De andre datoer står i facit ("anden kilde: 03/11/2026") og i `alternatives`. Ligger facit uden for de 14 dage, men en anden kilde siger en dato inden for, kører regnskabsteamet alligevel, og dets mål siger, at kilderne er uenige, og at datoen skal bekræftes på selskabets investor-side. (Indtil 19/10/2026 vandt EODHD ved uafgjort. Derfor fik SpaceX EODHD's estimat 03/11 i stedet for den rigtige dato 20/10, og regnskabsteamet kørte ikke.)
+**Regnskabsdato ved uenighed.** Flest kilder vinder, og datoer højst 1 dag fra hinanden tæller som enige (EODHD og Yahoo daterer ofte i hver sin tidszone). Står det lige, vinder en bekræftet dato: Yahoo siger eksplicit "ikke et estimat", eller datoen er skrevet ind i Vibetrad (`next_reports_source: "manuel"`, typisk fra selskabets IR-side). Ellers vinder den tidligste dato: hellere forberedt for tidligt end overrasket. De andre datoer står i facit ("anden kilde: 03/11/2026") og i `alternatives`. Ligger facit uden for de 14 dage, men en anden kilde siger en dato inden for, kører regnskabsteamet alligevel, og dets mål siger, at kilderne er uenige, og at datoen skal bekræftes på selskabets investor-side. (Indtil 19/10/2026 vandt EODHD ved uafgjort. Derfor fik SpaceX EODHD's estimat 03/11 i stedet for den rigtige dato 20/10, og regnskabsteamet kørte ikke.)
 
 Begivenheder, der ikke er datafejl, vises for sig: estimeret udløb af lock-up for nyligt børsnoterede selskaber (IPO + 180 dage, fx SpaceX ca. 09/12/2026) samt udbytter og splits.
 
@@ -149,7 +149,7 @@ Alle agenter får investorens rammer i deres instruks:
 
 CIO'en skal desuden kun foreslå fonde og ETF'er, der kan købes hos Nordnet. (Kørslen 19/10/2026 anbefalede ACWI.US, som en privatkunde ikke kan købe hos Nordnet.)
 
-**Ledig kontant.** Runneren læser det reserverede beløb fra kontantnoten ("Heraf 2 400 SEK reserveret til åben limitordre", "Reserveret til ordre: 2 400 SEK", "2.400 kr. er bundet i ordren"). Kun beløb i SEK/kr tæller, så en limitkurs i DKK ignoreres. Et tal i `cash_reserved_sek` vinder over noten, og reservationen kan aldrig blive større end kontanten. Porteføljeteksten viser "Ledig til nye køb: … SEK", datatjekkets facit viser "heraf … reserveret, … ledig", og ETF- og fondsteamet får kun indskuddet og den ledige kontant at fordele.
+**Ledig kontant.** Runneren læser det reserverede beløb fra kontantnoten ("Heraf 2 400 SEK reserveret til åben limitordre", "Reserveret til ordre: 2 400 SEK", "2.400 kr. er bundet i ordren"). Kun beløb i SEK/kr tæller, så en limitkurs i DKK ignoreres. En nægtelse ("ikke længere reserveret", "Intet reserveret") tæller ikke, og samme beløb nævnt to gange tælles én gang. Et tal i `cash_reserved_sek` vinder over noten, og reservationen kan aldrig blive større end kontanten. Porteføljeteksten viser "Ledig til nye køb: … SEK", datatjekkets facit viser "heraf … reserveret, … ledig", og ETF- og fondsteamet får kun indskuddet og den ledige kontant at fordele.
 
 ## Vægtpolitik
 
@@ -163,7 +163,7 @@ Risikoudvalget regner altid tabet i SEK i fire scenarier: den største position 
 
 Runneren retter to ting i Vibe-Trading, mens kørslen står på. Der ændres ikke i den installerede pakke. Status står i GitHub-loggen ("Vibe-Trading-rettelser: …"), i rapporten (`vibe_trading_patches`) og i Vibetrad under Model.
 
-- **Værktøjsresultater bevares.** I 0.1.16 overskriver hver agent alle værktøjsresultater undtagen de 3 nyeste med `[cleared]`, i hver iteration. En agent, der henter seks kurser, har dermed mistet de tre første, før den skriver, og må gentage kaldene eller skrive uden tallene. Runneren erstatter den ene blok i `_run_worker_impl`: resultaterne bevares, indtil de tilsammen fylder over 40 000 tegn (`VT_TOOL_CONTEXT_CHARS`). Så ryddes de ældste ned til halvdelen, og de 3 nyeste røres aldrig. Ryddede resultater får en markør, der siger, at kaldet lykkedes. Det giver få ændringer i beskederne, så prompt-cachen holder. Hvis Vibe-Tradings kode ændrer sig, så blokken ikke findes, bruges originalen, og loggen siger "ikke anvendt".
+- **Værktøjsresultater bevares.** I 0.1.16 overskriver hver agent alle værktøjsresultater undtagen de 3 nyeste med `[cleared]`, i hver iteration. En agent, der henter seks kurser, har dermed mistet de tre første, før den skriver, og må gentage kaldene eller skrive uden tallene. Runneren erstatter den ene blok i `_run_worker_impl`: resultaterne bevares, indtil de tilsammen fylder over 40 000 tegn (`VT_TOOL_CONTEXT_CHARS`). Så ryddes de ældste ned til halvdelen, og de 3 nyeste røres aldrig. Ryddede resultater får en markør, der siger, at kaldet lykkedes, eller at det fejlede (fejl-kuverter), så ingen agent citerer tal fra et fejlet kald. Korte resultater, hvor markøren ville fylde mere, ryddes ikke. Linjenumrene i Vibe-Tradings tracebacks er de samme som før. Det giver få ændringer i beskederne, så prompt-cachen holder. Hvis Vibe-Tradings kode ændrer sig, så blokken ikke findes, bruges originalen, og loggen siger "ikke anvendt".
 - **`temperature` udelades for Claude-modeller af 5. generation** (`claude-sonnet-5`, `claude-opus-5-5` …), som afviser feltet. Vibe-Trading opdager det ellers først ved den første fejl, og i kørslen 19/10/2026 fejlede de parallelle agenters første kald derfor. `VT_TEMPERATURE=on|off` tvinger valget.
 
 En integrationstest kører den rigtige ReAct-løkke i Vibe-Trading med en falsk LLM og otte kurskald: med rettelsen ser det sidste kald alle otte resultater, og i 0.1.16 uden rettelsen er fem af dem `[cleared]`.
@@ -229,7 +229,7 @@ Opdatér `VT_PORTFOLIO` (Kopiér VT_PORTFOLIO i Vibetrad → `gh secret set VT_P
 
 ```bash
 pip install "cryptography>=42" pyyaml pytest pandas
-python -m pytest -q                      # 174 tests (integrationstestene for EODHD og Vibe-Trading-rettelserne kører kun, hvor vibe-trading-ai er installeret)
+python -m pytest -q                      # 186 tests (integrationstestene for EODHD og Vibe-Trading-rettelserne kører kun, hvor vibe-trading-ai er installeret)
 VT_PORTFOLIO="$(cat runner/portfolio.example.json)" VT_RESULTS_PASSPHRASE=0123456789abcdef \
   python runner/run_week.py --dry-run --event workflow_dispatch --results /tmp/vt-results
 ```

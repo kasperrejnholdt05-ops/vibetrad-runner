@@ -751,11 +751,22 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
             # Flest kilder vinder. Ved uafgjort: en bekræftet dato, ellers den TIDLIGSTE (risiko først: hellere
             # forberedt for tidligt end overrasket). Før 19/10/2026 vandt EODHD ved uafgjort, og SpaceX fik
             # EODHD's estimat 03/11 i stedet for Yahoos 20/10, som var den rigtige dato.
-            best = max(counts, key=lambda d: (counts[d], d in confirmed, -dt.date.fromisoformat(d).toordinal()))
+            # Datoer højst 1 dag fra hinanden er enige (fx EODHD og Yahoo, der daterer i hver sin tidszone):
+            # først vælges den gruppe, flest kilder støtter, så datoen i gruppen.
+            def support(d: str) -> int:
+                return sum(1 for v in known.values() if near(v, d))
+
+            def ordinal(d: str) -> int:
+                return dt.date.fromisoformat(d).toordinal()
+
+            anchor = max(counts, key=lambda d: (support(d), any(near(c, d) for c in confirmed),
+                                                -min(ordinal(x) for x in counts if near(x, d))))
+            group = [d for d in counts if near(d, anchor)]
+            best = max(group, key=lambda d: (counts[d], d in confirmed, d == cand["EODHD"], -ordinal(d)))
             in_window = bool(window and window[0] <= best <= window[1])
             r["verified"] = best
             r["confirmed"] = best in confirmed
-            r["agree"] = counts[best] + (1 if in_window else 0)
+            r["agree"] = support(best) + (1 if in_window else 0)
             # Andre datoer, som en kilde giver: vises i facit, og en tidligere dato kan udløse regnskabsteamet
             r["alternatives"] = sorted({v for v in known.values() if not near(v, best)})
             off = [f"{k} {dmy(v)}" for k, v in known.items() if not near(v, best)]
@@ -763,8 +774,8 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
                 off.append(f"Vibe-Trading {dmy(window[0])}–{dmy(window[1])}")
             if off:
                 r["status"] = "warn"
-                runner_up = max((n for d, n in counts.items() if d != best), default=0)
-                why = ("flest kilder" if counts[best] > runner_up else
+                runner_up = max((support(d) for d in counts if not near(d, best)), default=0)
+                why = ("flest kilder" if support(best) > runner_up else
                        "bekræftet dato" if best in confirmed else "uenighed: den tidligste dato er valgt")
                 r["notes"].append(f"datoer afviger: {', '.join(off)} (valgt {dmy(best)}: {why})")
                 if cand["portefølje"] and not near(cand["portefølje"], best) and r["agree"] >= 2:

@@ -574,6 +574,12 @@ def test_presets_get_eodhd_tool_guidance_and_brief(tmp_path, monkeypatch):
     assert len(cio["tools"]) == len(set(cio["tools"]))
 
 
+def test_same_ticker_twice_gives_one_earnings_desk():
+    p = rw.load_portfolio(json.dumps(dict(PORTFOLIO, holdings=PORTFOLIO["holdings"] + [PORTFOLIO["holdings"][1]])))
+    reps = rw.upcoming_reports(p, sto("2026-10-20T08:00"), lookup=None)
+    assert [r["ticker"] for r in reps] == ["QQQX.US"]
+
+
 def test_upcoming_reports_prefers_verified_dates():
     p = rw.load_portfolio(json.dumps(PORTFOLIO))  # porteføljen siger QQQX 28/10
     got = rw.upcoming_reports(p, sto("2026-10-20T08:00"), lookup=None,
@@ -840,6 +846,18 @@ def test_over_budget_clears_oldest_to_half_with_a_clear_marker():
     assert rw._vibetrad_compact_tool_results(big, 3, budget=40_000) == 0
 
 
+def test_failed_calls_get_an_error_marker_and_short_results_stay():
+    err = '{"status": "error", "error": "No price data for DEMO.US: ' + "x" * 300 + '"}'
+    msgs = _tool_msgs([12_000, 12_000, 150, 12_000, 12_000, 12_000])
+    tools = [m for m in msgs if m["role"] == "tool"]
+    tools[1]["content"] = err + " " * 11_000  # stor fejl-kuvert (json med efterstillede mellemrum)
+    rw._vibetrad_compact_tool_results(msgs, 3, budget=40_000)
+    assert tools[0]["content"].startswith("[CLEARED FROM CONTEXT: this tool call SUCCEEDED")
+    assert tools[1]["content"].startswith("[CLEARED FROM CONTEXT: this tool call FAILED") and "Never present" in tools[1]["content"]
+    assert tools[2]["content"] == "R2:" + "x" * 150  # markøren ville være længere end resultatet
+    assert rw._looks_like_error('{"ok": false}') and rw._looks_like_error('{"status":"error"') and not rw._looks_like_error("[]")
+
+
 def test_tool_context_budget_from_env(monkeypatch):
     monkeypatch.setenv("VT_TOOL_CONTEXT_CHARS", "12000")
     assert rw._tool_context_budget() == 12_000
@@ -878,6 +896,14 @@ def test_patched_vibe_trading_worker_keeps_tool_results(tmp_path, monkeypatch):
     monkeypatch.setenv("LANGCHAIN_MODEL_NAME", "claude-sonnet-5")
     st = rw.patch_vibe_trading()
     assert st["tool_context"].startswith("ok") and "_vibetrad_compact_tool_results" in w._run_worker_impl.__code__.co_names
+    import dis
+    import inspect
+
+    src = Path(inspect.getsourcefile(w._run_worker_impl)).read_text("utf-8").splitlines()
+    block = next(i + 1 for i, line in enumerate(src) if 'tool_msgs = [m for m in messages if m.get("role") == "tool"]' in line)
+    calls = [i.positions.lineno for i in dis.get_instructions(w._run_worker_impl)
+             if i.argval == "_vibetrad_compact_tool_results"]
+    assert calls == [block]  # tracebacks peger stadig på de rigtige linjer i worker.py
     from src.providers import llm
 
     assert "claude-sonnet-5" in llm._ANTHROPIC_TEMPERATURE_UNSUPPORTED
@@ -922,6 +948,11 @@ def test_patched_vibe_trading_worker_keeps_tool_results(tmp_path, monkeypatch):
     ("500 SEK ledig, 700 SEK reserveret", 700.0), ("reserveret til ordre; 212 SEK ledig", 0.0),
     ("Heraf 1 640,50 SEK reserveret", 1640.5), ("afsat 300 kr til gebyr", 300.0),
     ("Indskud 15 000 SEK den 25.; 1 000 SEK reserveret", 1000.0), ("ordre på 3 stk à 252 DKK", 0.0), ("", 0.0),
+    # nægtelser, punktum som decimaltegn, "ca.", gentagelser, engelsk og svensk
+    ("Ordren er gennemført; 1 640 SEK er ikke længere reserveret", 0.0), ("Intet reserveret – 2 615 SEK ledig", 0.0),
+    ("Ikke reserveret: 2 615 SEK", 0.0), ("Heraf 1640.50 SEK reserveret", 1640.5), ("(reserveret ca. 450 kr)", 450.0),
+    ("Heraf 1 640 SEK reserveret (1 640 SEK reserveret til ordren)", 1640.0), ("Reserved 500 SEK for an order", 500.0),
+    ("500 kr spärrat för order", 500.0), ("ikke en del af ordren; 700 SEK reserveret", 700.0),
 ])
 def test_reserved_cash_is_read_from_the_note(note, want):
     assert rw.reserved_from_note(note) == want
@@ -944,6 +975,8 @@ def test_free_cash_in_portfolio_text_scope_and_brief():
     assert p3["cash_reserved_sek"] == 2615 and rw.free_cash(p3) == 0
     p4 = rw.load_portfolio(json.dumps(dict(base, cash_reserved_sek=True, cash_note="")))
     assert p4["cash_reserved_sek"] == 0
+    assert rw.load_portfolio(json.dumps(dict(base, cash_reserved_sek="800")))["cash_reserved_sek"] == 800
+    assert rw.load_portfolio(json.dumps(dict(base, cash_reserved_sek="mange")))["cash_reserved_sek"] == 1640  # noten
     # Uden reservation: kontanten med beløb
     p5 = rw.load_portfolio(json.dumps(dict(base, cash_note="")))
     goal5 = next(s for s in rw.build_plan(p5, ref, rw.week_window(ref), reports=[])

@@ -51,8 +51,8 @@ SIDES = {
     "dividend": ["utdelning", "udbytte", "utbytte", "osinko", "dividend"],
 }
 # Kendte navne/ISIN → Vibe-Trading-symbol (amerikanske aktier skal have .US-suffiks i Vibe-Trading).
-# ISIN matcher præcist og vinder. Navne matcher som delstreng, og det længste navn vinder ("alphabet c" før
-# "alphabet"). Alt andet kan tilføjes med --map eller --portfolio-json.
+# ISIN matcher præcist og vinder. Navne matcher som hele ord i værdipapirets navn, og det længste navn vinder
+# ("alphabet c" før "alphabet", men "alphabet c" matcher ikke "Alphabet Class A"). Alt andet kan tilføjes med --map eller --portfolio-json.
 KNOWN = {
     # navne (kun entydige)
     "alphabet": "GOOGL.US", "alphabet c": "GOOG.US", "alphabet inc. class c": "GOOG.US",
@@ -153,7 +153,8 @@ def lookup(m: dict[str, str], name: str, isin: str) -> str | None:
     n = name.lower()
     best = None
     for key, sym in m.items():
-        if not re.match(r"^[A-Z]{2}[A-Z0-9]{9}\d$", key) and key and key in n:
+        if (not re.match(r"^[A-Z]{2}[A-Z0-9]{9}\d$", key) and key
+                and re.search(r"(?<!\w)" + re.escape(key) + r"(?!\w)", n)):  # hele ord: "alphabet c" ≠ "alphabet class a"
             if best is None or len(key) > len(best[0]):
                 best = (key, sym)
     return best[1] if best else None

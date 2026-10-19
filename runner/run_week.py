@@ -360,6 +360,8 @@ def load_portfolio(raw: str | None) -> dict:
     p.setdefault("currency", "SEK")
     p["cash_sek"] = float(p.get("cash_sek") or 0)
     reserved = p.get("cash_reserved_sek")
+    if isinstance(reserved, str) and re.fullmatch(r"\s*\d+(?:[.,]\d+)?\s*", reserved):
+        reserved = float(reserved.replace(",", "."))
     if not isinstance(reserved, (int, float)) or isinstance(reserved, bool):
         reserved = reserved_from_note(p.get("cash_note"))
     p["cash_reserved_sek"] = round(min(max(float(reserved or 0), 0.0), p["cash_sek"]), 2)
@@ -377,28 +379,41 @@ def load_portfolio(raw: str | None) -> dict:
     return p
 
 
-_AMOUNT = r"((?:\d{1,3}(?:[ .\u00a0\u202f]\d{3})+|\d+)(?:,\d{1,2})?)"
-_HELD = r"(?:reserver\w*|bundet|øremærket|afsat)"
+_AMOUNT = r"(?P<amt>(?:\d{1,3}(?:[ .\u00a0\u202f]\d{3})+|\d+)(?:[,.]\d{1,2})?)(?!\d)"
+_HELD = r"(?:reserv\w*|bundet|bunden|øremærket|öronmärkt|afsat|avsatt|spærret|spärrat)"
 _RESERVED_PATTERNS = (
     # "Heraf 2 400 SEK reserveret til åben limitordre", "2.400 kr. er bundet i ordren"
-    re.compile(_AMOUNT + r"\s*(?:SEK|kr\.?)(?=[^\d.;,]{0,30}?\b" + _HELD + r")", re.I),
-    # "Reserveret til ordre: 2 400 SEK", "bundet 2 400 SEK"
-    re.compile(r"\b" + _HELD + r"[^\d.;,]{0,30}?" + _AMOUNT + r"\s*(?:SEK|kr\b)", re.I),
+    re.compile(_AMOUNT + r"\s*(?:SEK|kr\b\.?)(?P<gap>[^\d.;,]{0,30}?)\b(?P<held>" + _HELD + ")", re.I),
+    # "Reserveret til ordre: 2 400 SEK", "bundet ca. 2 400 SEK"
+    re.compile(r"\b(?P<held>" + _HELD + r")(?P<gap>[^\d.;,]{0,30}?(?:ca\.\s*)?)" + _AMOUNT + r"\s*(?:SEK|kr\b)", re.I),
 )
+# "ikke længere reserveret", "Intet reserveret", "inte spärrat": ingen reservation
+_NOT_HELD = re.compile(r"\b(?:ikke|intet|ingen|inte|ej|not|no|længere|längre|ophævet|frigivet|annulleret)\b", re.I)
+
+
+def _amount(raw: str) -> float:
+    s = re.sub(r"[ \u00a0\u202f]", "", raw)
+    dec = re.search(r"[,.](\d{1,2})$", s)
+    whole = s[:dec.start()] if dec else s
+    return float(re.sub(r"[.,]", "", whole) + ("." + dec.group(1) if dec else ""))
 
 
 def reserved_from_note(note: object) -> float:
     """Beløb, som kontantnoten siger er reserveret (fx 'Heraf 2 400 SEK reserveret til åben limitordre').
 
-    Kun SEK/kr tæller; beløb i andre valutaer (fx limitkursen i DKK) ignoreres. Samme beløb fanget af begge
-    mønstre tælles én gang.
+    Kun SEK/kr tæller; beløb i andre valutaer (fx limitkursen i DKK) ignoreres. En nægtelse lige før eller
+    mellem beløb og ordet ("ikke længere reserveret", "Intet reserveret") tæller ikke. Samme beløb nævnt
+    flere gange tælles én gang.
     """
     text = str(note or "")
-    spans: dict[tuple[int, int], float] = {}
+    found: dict[tuple[int, int], float] = {}
     for rx in _RESERVED_PATTERNS:
         for m in rx.finditer(text):
-            spans[m.span(1)] = float(re.sub(r"[ .\u00a0\u202f]", "", m.group(1)).replace(",", "."))
-    return float(sum(spans.values()))
+            before = text[max(0, m.start("held") - 20):m.start("held")]
+            if _NOT_HELD.search(m.group("gap")) or _NOT_HELD.search(before):
+                continue
+            found[m.span("amt")] = _amount(m.group("amt"))
+    return float(sum(set(found.values())))
 
 
 def free_cash(p: dict) -> float:
@@ -487,9 +502,11 @@ def upcoming_reports(p: dict, ref: dt.datetime, horizon_days: int = 14,
     today = ref.date()
     end = today + dt.timedelta(days=horizon_days)
     found = []
+    seen: set[str] = set()
     for h in p["holdings"]:
-        if h["kind"] in ("cash", "fund", "etf"):
+        if h["kind"] in ("cash", "fund", "etf") or h["ticker"] in seen:  # samme papir to gange → ét regnskab
             continue
+        seen.add(h["ticker"])
         raw = (p.get("next_reports") or {}).get(h["ticker"])
         d, src = None, None
         if verified and verified.get(h["ticker"]):
@@ -1137,6 +1154,19 @@ def _tool_context_budget() -> int:
         return VT_TOOL_CONTEXT_CHARS
 
 
+def _looks_like_error(text: str) -> bool:
+    """Fejl-kuvert fra et værktøj ({"status": "error"} eller ok/success = false), som Vibe-Tradings egen regel."""
+    t = text.strip()
+    if not t.startswith("{"):
+        return False
+    try:
+        data = json.loads(t)
+    except ValueError:
+        return bool(re.search(r'^\{\s*"(?:status)"\s*:\s*"error"', t[:200]))
+    return isinstance(data, dict) and (data.get("status") == "error" or data.get("ok") is False
+                                       or data.get("success") is False)
+
+
 def _vibetrad_compact_tool_results(messages: list, keep_recent: int = 3, budget: int | None = None) -> int:
     """Ryd gamle værktøjsresultater først, når de tilsammen fylder mere end ``budget`` tegn.
 
@@ -1160,9 +1190,15 @@ def _vibetrad_compact_tool_results(messages: list, keep_recent: int = 3, budget:
         c = m.get("content")
         if not isinstance(c, str) or len(c) <= 100 or c.startswith(_VT_CLEARED):
             continue
-        marker = (f"{_VT_CLEARED}: this tool call SUCCEEDED and returned {len(c)} characters. It was removed to "
-                  "keep the context small. Use the numbers you already noted from it; repeat the call only if you "
-                  "need exact figures you did not note.]")
+        if _looks_like_error(c):
+            marker = (f"{_VT_CLEARED}: this tool call FAILED (error, {len(c)} characters). It was removed to keep "
+                      "the context small. Never present a number from it.]")
+        else:
+            marker = (f"{_VT_CLEARED}: this tool call SUCCEEDED and returned {len(c)} characters. It was removed "
+                      "to keep the context small. Use the numbers you already noted from it; repeat the call only "
+                      "if you need exact figures you did not note.]")
+        if len(marker) >= len(c):  # rydning ville ikke spare plads
+            continue
         m["content"] = marker
         total += len(marker) - len(c)
         cleared += 1
@@ -1185,8 +1221,10 @@ def patch_vibe_trading() -> dict[str, str]:
             if src.count(_VT_MICROCOMPACT) != 1:
                 status["tool_context"] = "ikke anvendt: Vibe-Tradings kode er ændret (opdatér rettelsen)"
             else:
-                new = src.replace(_VT_MICROCOMPACT,
-                                  "        _vibetrad_compact_tool_results(messages, _KEEP_RECENT_TOOLS)\n")
+                # Samme antal linjer og samme startlinje som originalen, så tracebacks peger det rigtige sted i worker.py
+                repl = "        _vibetrad_compact_tool_results(messages, _KEEP_RECENT_TOOLS)\n"
+                repl += "\n" * (_VT_MICROCOMPACT.count("\n") - 1)
+                new = "\n" * (fn.__code__.co_firstlineno - 1) + src.replace(_VT_MICROCOMPACT, repl)
                 import __future__
 
                 code = compile(new, inspect.getsourcefile(fn) or "<vibetrad>", "exec",
@@ -1409,7 +1447,7 @@ def main(argv: list[str] | None = None) -> int:
                            "trace": traceback.format_exc()[-4000:]})
             runtime = store = None
     if shellfree:
-        con.say(f"Kvant-værktøjer i stedet for shell i {len(shellfree)} presets")
+        con.say(f"Presets tilpasset (kvant-værktøjer i stedet for shell, facit, ISK-rammer): {len(shellfree)}")
     if VT_PATCHES:
         con.say("Vibe-Trading-rettelser: " + "; ".join(f"{k} {v}" for k, v in VT_PATCHES.items()))
     if runtime is None:

@@ -551,3 +551,13 @@ def test_yahoo_confirmation_flag_needs_an_explicit_false(monkeypatch):
     assert a["earnings_confirmed"] and not a["earnings_estimate"]
     assert not b["earnings_confirmed"] and b["earnings_estimate"]
     assert not c["earnings_confirmed"] and not c["earnings_estimate"]  # feltet mangler: ukendt, ikke bekræftet
+
+
+def test_dates_one_day_apart_outvote_a_lone_early_date():
+    """Review: EODHD 28/10 og Yahoo 29/10 er enige (±1 dag). En gammel porteføljedato 20/10 må ikke vinde."""
+    p = rw.load_portfolio(json.dumps(dict(json.loads(RAW_P), next_reports={"GOOGL.US": "2026-10-20", "SPCX.US": "2026-11-03"})))
+    vt, eod = sources(vt_prof={"GOOGL.US": {"earnings_dates": ["2026-10-29"]}, "SPCX.US": {"earnings_dates": ["2026-11-03"]}})
+    g = next(e for e in dtj.run(p, WEEK, REF, vt=vt, eod=eod)["earnings"] if e["ticker"] == "GOOGL.US")
+    assert g["verified"] == "2026-10-28" and g["agree"] == 2 and g["alternatives"] == ["2026-10-20"]
+    assert any("valgt 28/10/2026: flest kilder" in n for n in g["notes"])
+    assert any("ret datoen i VT_PORTFOLIO" in n for n in g["notes"])

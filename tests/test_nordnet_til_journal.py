@@ -70,6 +70,7 @@ def test_known_names_and_isins():
     assert nj.lookup(m, "Alphabet Inc. Class C", "") == nj.lookup(m, "Alphabet C", "") == "GOOG.US" and nj.lookup(m, "Alphabet A", "") == "GOOGL.US"
     assert nj.lookup(m, "Apple", "US0378331005") == "AAPL.US" and nj.lookup(m, "Volvo B", "SE0000115446") == "VOLV-B.ST"
     assert nj.lookup(m, "Apple Hospitality REIT", "") is None  # korte, tvetydige navne matches ikke
+    assert nj.lookup(m, "Alphabet Class A", "") == nj.lookup(m, "Alphabet Cl A", "") == "GOOGL.US"  # hele ord
 
 
 def test_number_parsing():
