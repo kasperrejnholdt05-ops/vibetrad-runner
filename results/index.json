@@ -2,6 +2,26 @@
  "schema": 1,
  "weeks": [
   {
+   "run_id": "2026-W42_20261019-1246_39229437135",
+   "week_id": "2026-W42",
+   "week_label": "Uge 42 · 12/10/2026–16/10/2026",
+   "generated_at": "2026-10-19T12:46:46+02:00",
+   "status": "ok",
+   "runs": 5,
+   "completed": 5,
+   "dry_run": false,
+   "presets": [
+    "risk_committee",
+    "earnings_research_desk",
+    "fund_selection_panel",
+    "sentiment_intelligence_team",
+    "portfolio_review_board"
+   ],
+   "week_to": "2026-10-16",
+   "cost_usd": 28.06,
+   "datacheck": "ADVARSEL"
+  },
+  {
    "run_id": "2026-W42_20261016-1351_38887059261",
    "week_id": "2026-W42",
    "week_label": "Uge 42 · 12/10/2026–15/10/2026 (ugen til dato)",
@@ -75,5 +95,5 @@
    ]
   }
  ],
- "latest": "2026-W42_20261016-1351_38887059261"
+ "latest": "2026-W42_20261019-1246_39229437135"
 }
