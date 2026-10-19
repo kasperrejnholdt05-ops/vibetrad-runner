@@ -20,7 +20,8 @@ jobs:
       - run: pip install --quiet "cryptography>=42" pyyaml pytest pandas
       - run: python -m pytest -q
 
-  # EODHD-integrationen testes mod det rigtige vibe-trading-ai (samme version som ugekørslen).
+  # EODHD-integrationen og rettelserne i Vibe-Trading (værktøjsresultater, temperature) testes mod det rigtige
+  # vibe-trading-ai (samme version som ugekørslen).
   integration:
     runs-on: ubuntu-24.04
     steps:
@@ -31,6 +32,6 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
       - run: pip install --quiet -r requirements.txt pytest
-      - run: python -m pytest -q tests/test_eodhd.py
+      - run: python -m pytest -q tests/test_eodhd.py "tests/test_run_week.py::test_patched_vibe_trading_worker_keeps_tool_results"
         env:
           VIBE_TRADING_HOME: /tmp/vibe-trading

@@ -466,3 +466,88 @@ def test_watchlist_report_date_without_year_and_copied_eodhd_dates():
     vt3, eod3 = sources(earn={})
     g3 = next(e for e in dtj.run(p2, WEEK, REF, vt=vt3, eod=eod3)["earnings"] if e["ticker"] == "GOOGL.US")
     assert g3["verified"] == "2026-10-28" and g3["agree"] == 2
+
+
+def _spcx(dc):
+    return next(e for e in dc["earnings"] if e["ticker"] == "SPCX.US")
+
+
+def test_tied_report_dates_pick_the_earliest_not_eodhd():
+    """Kørslen 19/10/2026: EODHD sagde 03/11 (estimat), Yahoo 20/10 (rigtigt). Porteføljens dato var hentet fra
+    EODHD og tæller ikke selv, så det stod 1–1, og EODHD vandt. Nu vinder den tidligste dato ved uafgjort."""
+    p = rw.load_portfolio(json.dumps(dict(json.loads(RAW_P), next_reports_source={"SPCX.US": "eodhd"})))
+    vt_prof = {"SPCX.US": {"earnings_dates": ["2026-10-20"], "earnings_estimate": False}}
+    vt, eod = sources(vt_prof=vt_prof)
+    dc = dtj.run(p, WEEK, REF, vt=vt, eod=eod)
+    s = _spcx(dc)
+    assert s["verified"] == "2026-10-20" and s["alternatives"] == ["2026-11-03"] and s["agree"] == 1
+    assert s["status"] == "warn" and any("uenighed: den tidligste dato er valgt" in n for n in s["notes"])
+    assert dtj.alternative_reports(dc) == {"SPCX.US": ["2026-11-03"]}
+    b = dtj.agent_brief(dc)
+    assert "| 20/10/2026 (1 kilde; anden kilde: 03/11/2026) |" in b  # "efter lukning" hører til EODHD's 03/11
+    # Planen: regnskabsteamet køres på 20/10 og ved, at datoen er usikker
+    reps = rw.upcoming_reports(p, REF, lookup=None, verified=dtj.verified_reports(dc),
+                               alternatives=dtj.alternative_reports(dc))
+    sp = next(r for r in reps if r["ticker"] == "SPCX.US")
+    assert sp == {"ticker": "SPCX.US", "name": "SpaceX", "date": "2026-10-20", "source": "datatjek",
+                  "alt_dates": ["2026-11-03"]}
+    plan = rw.build_plan(p, REF, WEEK, reports=reps)
+    desk = next(s for s in plan if s["preset"] == "earnings_research_desk" and s["context"]["ticker"] == "SPCX.US")
+    assert "regnskab 20/10/2026; kilderne er uenige: en anden kilde siger 03/11/2026" in desk["vars"]["target"]
+    assert desk["reason"].startswith("Regnskab 20/10/2026 (eller 03/11/2026)")
+
+
+def test_confirmed_dates_win_ties_and_majority_still_wins():
+    # Yahoo siger eksplicit "ikke et estimat": den bekræftede dato vinder over EODHD's, også når den er senere
+    vt, eod = sources(vt_prof={"SPCX.US": {"earnings_dates": ["2026-11-05"], "earnings_estimate": False,
+                                          "earnings_confirmed": True}})
+    p = rw.load_portfolio(json.dumps(dict(json.loads(RAW_P), next_reports_source={"SPCX.US": "eodhd"})))
+    s = _spcx(dtj.run(p, WEEK, REF, vt=vt, eod=eod))
+    assert s["verified"] == "2026-11-05" and s["confirmed"] and any("bekræftet dato" in n for n in s["notes"])
+    # En dato skrevet ind i Vibetrad (fx fra selskabets IR-side) er også bekræftet
+    p2 = rw.load_portfolio(json.dumps(dict(json.loads(RAW_P), next_reports={"SPCX.US": "2026-11-12"},
+                                           next_reports_source={"SPCX.US": "manuel"})))
+    vt2, eod2 = sources(vt_prof={})
+    s2 = _spcx(dtj.run(p2, WEEK, REF, vt=vt2, eod=eod2))
+    assert s2["verified"] == "2026-11-12" and s2["alternatives"] == ["2026-11-03"]
+    # Flertallet vinder stadig: porteføljen + EODHD siger 03/11, Yahoo 20/10. Planen tager alligevel
+    # regnskabet med på 20/10 (risiko først), fordi 03/11 ligger uden for de 14 dage
+    vt3, eod3 = sources(vt_prof={"SPCX.US": {"earnings_dates": ["2026-10-20"]}})
+    dc3 = dtj.run(P, WEEK, REF, vt=vt3, eod=eod3)
+    s3 = _spcx(dc3)
+    assert s3["verified"] == "2026-11-03" and s3["agree"] == 2 and s3["alternatives"] == ["2026-10-20"]
+    assert any("flest kilder" in n for n in s3["notes"])
+    reps = rw.upcoming_reports(P, REF, lookup=None, verified=dtj.verified_reports(dc3),
+                               alternatives=dtj.alternative_reports(dc3))
+    sp = next(r for r in reps if r["ticker"] == "SPCX.US")
+    assert sp["date"] == "2026-10-20" and sp["source"] == "datatjek (tidligste kilde)" and sp["alt_dates"] == ["2026-11-03"]
+    # Uden uenighed: ingen alt_dates, og en dato uden for horisonten giver intet regnskabsteam
+    dc4 = run()
+    assert dtj.alternative_reports(dc4) == {}
+    assert [r["ticker"] for r in rw.upcoming_reports(P, REF, lookup=None, verified=dtj.verified_reports(dc4),
+                                                     alternatives={})] == ["GOOGL.US"]
+
+
+def test_yahoo_confirmation_flag_needs_an_explicit_false(monkeypatch):
+    import types
+
+    calls = {}
+
+    def fake_summary(code, modules):
+        calls[code] = modules
+        flag = {"A.US": {"raw": False}, "B.US": {"raw": True}}.get(code)
+        ce = {"earningsDate": [{"raw": 1792800000}]}
+        if flag is not None:
+            ce["isEarningsDateEstimate"] = flag
+        return {"price": {"longName": code}, "calendarEvents": {"earnings": ce}}
+
+    mod = types.ModuleType("backtest.loaders.yahoo_client")
+    mod.get_quote_summary = fake_summary
+    monkeypatch.setitem(sys.modules, "backtest", types.ModuleType("backtest"))
+    monkeypatch.setitem(sys.modules, "backtest.loaders", types.ModuleType("backtest.loaders"))
+    monkeypatch.setitem(sys.modules, "backtest.loaders.yahoo_client", mod)
+    src = dtj.VibeTradingSource()
+    a, b, c = src.profile("A.US"), src.profile("B.US"), src.profile("C.US")
+    assert a["earnings_confirmed"] and not a["earnings_estimate"]
+    assert not b["earnings_confirmed"] and b["earnings_estimate"]
+    assert not c["earnings_confirmed"] and not c["earnings_estimate"]  # feltet mangler: ukendt, ikke bekræftet

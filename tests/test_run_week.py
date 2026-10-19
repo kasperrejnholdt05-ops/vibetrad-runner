@@ -14,6 +14,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "runner"))
+import datatjek as dtj  # noqa: E402
 import run_week as rw  # noqa: E402
 
 UTC = dt.timezone.utc
@@ -754,6 +755,7 @@ def test_etf_and_fund_teams_only_allocate_new_money(slot, preset, key, monkeypat
     txt = next(s for s in plan if s["preset"] == preset)["vars"][key]
     assert "nye indskud (ca. 15 000 SEK om måneden)" in txt and "sælg ikke de eksisterende aktier" in txt
     assert "fordel ikke hele porteføljens værdi" in txt and "Angiv ingen kurtagesats" in txt
+    assert "UCITS" in txt and "kun dataproxy" in txt and "nye indskud (ca. 15 000 SEK om måneden) og kontanten (2 615 SEK)" in txt
 
 
 def test_symbol_guidance_for_agents_that_fetch_prices(tmp_path):
@@ -770,13 +772,28 @@ def test_symbol_guidance_for_agents_that_fetch_prices(tmp_path):
     assert "ACWI.US" in screener["system_prompt"] and "China A-share" in screener["system_prompt"]
     assert "never present a number from that call" in screener["system_prompt"]
     assert "share class" in screener["system_prompt"] and "whole-company figure" in screener["system_prompt"]
-    assert "ACWI.US" not in writer["system_prompt"]
+    assert "China A-share" not in writer["system_prompt"] and "whole-company figure" not in writer["system_prompt"]
+    assert "NOVO-B.CO" in screener["system_prompt"] and "USDSEK=X" in screener["system_prompt"]
+
+
+def test_every_agent_gets_the_isk_and_nordnet_rules(tmp_path):
+    import yaml
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "custom_desk.yaml").write_text(yaml.safe_dump({"name": "custom_desk", "agents": [
+        {"id": "writer", "system_prompt": "Skriv.", "tools": ["read_file"]}]}))
+    assert rw.prepare_shellfree_presets(tmp_path / "dst", src) == ["custom_desk"]
+    (writer,) = yaml.safe_load((tmp_path / "dst" / "custom_desk.yaml").read_text())["agents"]
+    txt = writer["system_prompt"]
+    assert txt.startswith("Skriv.") and "UCITS" in txt and "Nordnet" in txt and "PRIIPs" in txt
+    assert "No options, futures, short selling or leverage" in txt and "reserved" in txt
 
 
 def test_cio_prompt_requires_disagreements_scenarios_and_falsifiers():
     cio = rw.EXTRA_PROMPT["portfolio_review_board"]["chief_investment_officer"]
     for txt in ("Uenigheder mellem teams", "loss scenarios in SEK", "Jeg tager fejl, hvis", "months of deposits",
-                "delivered no report"):
+                "delivered no report", "ALL FOUR", "USD/SEK -10 %", "your own team", "count them correctly",
+                "buyable at Nordnet"):
         assert txt in cio, txt
     assert "never compare it with" in rw.FRED_GUIDANCE
 
@@ -788,5 +805,152 @@ def test_cash_note_keeps_its_decimal_commas():
                                       "next_reports_source": {"aaa.us": "EODHD", "BBB.US": "gæt"}}))
     txt = rw.portfolio_text(p)
     assert "- Kontant: 2 615 SEK (Heraf 1 640 SEK reserveret til åben limitordre: Demo Pharma B, 5 stk à 318,40 DKK)" in txt
+    assert "Ledig til nye køb: 975 SEK (1 640 SEK er reserveret og kan ikke bruges)" in txt
     assert p["next_reports_source"] == {"AAA.US": "eodhd"}
     assert rw.load_portfolio(json.dumps({"holdings": [{"ticker": "A"}], "next_reports_source": "eodhd"}))["next_reports_source"] == {}
+
+
+# --- Rettelser i Vibe-Trading 0.1.16 (kørslen 19/10/2026) -------------------------------------------------
+
+def _tool_msgs(sizes):
+    msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+    for i, n in enumerate(sizes):
+        msgs += [{"role": "assistant", "content": "", "tool_calls": [{"id": f"c{i}"}]},
+                 {"role": "tool", "tool_call_id": f"c{i}", "content": f"R{i}:" + "x" * n}]
+    return msgs
+
+
+def test_tool_results_are_kept_until_the_budget_is_used():
+    msgs = _tool_msgs([3000] * 8)  # 8 kurser à 3 000 tegn: Vibe-Trading 0.1.16 ryddede de 5 ældste
+    assert rw._vibetrad_compact_tool_results(msgs, 3, budget=40_000) == 0
+    assert all(m["content"].startswith(f"R{i}:") for i, m in enumerate(x for x in msgs if x["role"] == "tool"))
+
+
+def test_over_budget_clears_oldest_to_half_with_a_clear_marker():
+    msgs = _tool_msgs([10_000] * 6 + [50, 10_000])
+    assert rw._vibetrad_compact_tool_results(msgs, 3, budget=40_000) == 5
+    tools = [m["content"] for m in msgs if m["role"] == "tool"]
+    assert all(t.startswith("[CLEARED FROM CONTEXT: this tool call SUCCEEDED and returned 10003 characters")
+               for t in tools[:5])
+    assert tools[5].startswith("R5:") and tools[6] == "R6:" + "x" * 50 and tools[7].startswith("R7:")
+    assert sum(len(t) for t in tools) <= 20_000 + 3 * 10_003
+    # Kørt igen: intet nyt at rydde (markører ryddes ikke igen), og de 3 nyeste røres aldrig
+    assert rw._vibetrad_compact_tool_results(msgs, 3, budget=40_000) == 0
+    big = _tool_msgs([30_000] * 3)
+    assert rw._vibetrad_compact_tool_results(big, 3, budget=40_000) == 0
+
+
+def test_tool_context_budget_from_env(monkeypatch):
+    monkeypatch.setenv("VT_TOOL_CONTEXT_CHARS", "12000")
+    assert rw._tool_context_budget() == 12_000
+    monkeypatch.setenv("VT_TOOL_CONTEXT_CHARS", "10")
+    assert rw._tool_context_budget() == 5_000
+    monkeypatch.setenv("VT_TOOL_CONTEXT_CHARS", "mange")
+    assert rw._tool_context_budget() == rw.VT_TOOL_CONTEXT_CHARS
+
+
+@pytest.mark.parametrize("model,omit", [("claude-sonnet-5", True), ("claude-opus-5-5", True), ("claude-haiku-5", True),
+                                        ("claude-sonnet-4-5", False), ("claude-opus-4-1", False), ("gpt-5", False),
+                                        ("claude-sonnet-50", False)])
+def test_fifth_generation_claude_models_skip_temperature(model, omit):
+    assert bool(rw._NO_TEMPERATURE.match(model)) is omit
+
+
+def test_patches_degrade_without_vibe_trading(monkeypatch):
+    import importlib.util
+
+    if importlib.util.find_spec("src") is not None:
+        pytest.skip("Vibe-Trading er installeret: se integrationstesten")
+    monkeypatch.setenv("LANGCHAIN_MODEL_NAME", "claude-sonnet-5")
+    st = rw.patch_vibe_trading()
+    assert st["tool_context"].startswith("ikke anvendt") and st["temperature"].startswith("ikke anvendt")
+    monkeypatch.setenv("VT_TEMPERATURE", "on")
+    assert rw._patch_temperature() == "ikke ændret"
+
+
+def test_patched_vibe_trading_worker_keeps_tool_results(tmp_path, monkeypatch):
+    """Integration: den rigtige ReAct-løkke i Vibe-Trading med en falsk LLM (køres, hvor Vibe-Trading findes)."""
+    w = pytest.importorskip("src.swarm.worker")
+    from src.agent.tools import BaseTool, ToolRegistry
+    from src.providers.chat import LLMResponse, ToolCallRequest
+    from src.swarm.models import SwarmAgentSpec, SwarmTask
+
+    monkeypatch.setenv("LANGCHAIN_MODEL_NAME", "claude-sonnet-5")
+    st = rw.patch_vibe_trading()
+    assert st["tool_context"].startswith("ok") and "_vibetrad_compact_tool_results" in w._run_worker_impl.__code__.co_names
+    from src.providers import llm
+
+    assert "claude-sonnet-5" in llm._ANTHROPIC_TEMPERATURE_UNSUPPORTED
+
+    class Prices(BaseTool):
+        name, description = "get_market_data", "fake prices"
+        parameters = {"type": "object", "properties": {"i": {"type": "integer"}}}
+
+        def execute(self, **kw):
+            return f"R{kw.get('i')}:" + "x" * 3000
+
+    def registry(*a, **k):
+        r = ToolRegistry()
+        r.register(Prices())
+        return r
+
+    seen: list[list[str]] = []
+
+    class FakeLLM:
+        model_name = "fake"
+
+        def stream_chat(self, messages, tools=None, timeout=None, on_text_chunk=None, **kw):
+            done = [m["content"] for m in messages if m.get("role") == "tool"]
+            seen.append(done)
+            if len(done) < 8:
+                return LLMResponse(content="", finish_reason="tool_calls", tool_calls=[
+                    ToolCallRequest(id=f"c{len(done)}", name="get_market_data", arguments={"i": len(done)})])
+            return LLMResponse(content="## Resultat\n" + "Rapport med alle tal. " * 5, finish_reason="stop")
+
+    monkeypatch.setattr(w, "build_swarm_registry", registry)
+    res = w._run_worker_impl(SwarmAgentSpec(id="a", role="analyst", system_prompt="Analyse.", tools=["get_market_data"]),
+                             SwarmTask(id="t", agent_id="a", prompt_template="Go"), {}, {}, tmp_path, llm=FakeLLM())
+    assert str(res.status).endswith("completed")
+    assert [t[:3] for t in seen[-1]] == [f"R{i}:" for i in range(8)]  # 0.1.16 uden rettelsen: 5 × "[cleared]"
+
+
+# --- Ledig kontant (kørslen 19/10/2026 fordelte "kontanten", selv om det meste var reserveret) ---------------
+
+@pytest.mark.parametrize("note,want", [
+    ("Heraf 2 400 SEK reserveret til åben limitordre: Demo Pharma B, 5 stk à 318,40 DKK", 2400.0),
+    ("Reserveret til ordre: 1 250 SEK", 1250.0), ("2.400 kr. er bundet i ordren", 2400.0),
+    ("500 SEK ledig, 700 SEK reserveret", 700.0), ("reserveret til ordre; 212 SEK ledig", 0.0),
+    ("Heraf 1 640,50 SEK reserveret", 1640.5), ("afsat 300 kr til gebyr", 300.0),
+    ("Indskud 15 000 SEK den 25.; 1 000 SEK reserveret", 1000.0), ("ordre på 3 stk à 252 DKK", 0.0), ("", 0.0),
+])
+def test_reserved_cash_is_read_from_the_note(note, want):
+    assert rw.reserved_from_note(note) == want
+
+
+def test_free_cash_in_portfolio_text_scope_and_brief():
+    base = {"holdings": [{"ticker": "AAA.US", "name": "Aaa", "qty": 1, "cost_sek": 1000}], "cash_sek": 2615,
+            "cash_note": "Heraf 1 640 SEK reserveret til åben limitordre", "monthly_deposit_sek": 15000}
+    p = rw.load_portfolio(json.dumps(base))
+    assert p["cash_reserved_sek"] == 1640 and rw.free_cash(p) == 975
+    assert "Ledig til nye køb: 975 SEK (1 640 SEK er reserveret og kan ikke bruges)" in rw.portfolio_text(p)
+    ref = sto("2026-10-17T08:00")  # 3. lørdag: fondsvalg
+    plan = rw.build_plan(p, ref, rw.week_window(ref), reports=[])
+    goal = next(s for s in plan if s["preset"] == "fund_selection_panel")["vars"]["goal"]
+    assert "nye indskud (ca. 15 000 SEK om måneden) og den ledige kontant (975 SEK; resten er reserveret)" in goal
+    # Et eksplicit tal vinder over noten, og det kan ikke overstige kontanten
+    p2 = rw.load_portfolio(json.dumps(dict(base, cash_reserved_sek=500)))
+    assert p2["cash_reserved_sek"] == 500 and rw.free_cash(p2) == 2115
+    p3 = rw.load_portfolio(json.dumps(dict(base, cash_reserved_sek=99999)))
+    assert p3["cash_reserved_sek"] == 2615 and rw.free_cash(p3) == 0
+    p4 = rw.load_portfolio(json.dumps(dict(base, cash_reserved_sek=True, cash_note="")))
+    assert p4["cash_reserved_sek"] == 0
+    # Uden reservation: kontanten med beløb
+    p5 = rw.load_portfolio(json.dumps(dict(base, cash_note="")))
+    goal5 = next(s for s in rw.build_plan(p5, ref, rw.week_window(ref), reports=[])
+                 if s["preset"] == "fund_selection_panel")["vars"]["goal"]
+    assert "og kontanten (2 615 SEK)" in goal5 and "Ledig til nye køb" not in rw.portfolio_text(p5)
+    # Datatjekkets facit viser også den ledige del
+    brief = dtj.agent_brief({"ref_date": "2026-10-16", "status": "PASS", "instruments": [], "earnings": [], "fx": [],
+                             "sources": {"vibe_trading": {"available": False}, "eodhd": {"available": False}},
+                             "portfolio": {"cash_sek": 2615, "cash_reserved_sek": 1640, "total_sek": 3615}})
+    assert "Kontant 2 615 SEK (heraf 1 640 SEK reserveret, 975 SEK ledig)" in brief

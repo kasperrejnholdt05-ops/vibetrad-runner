@@ -65,6 +65,13 @@ def test_danish_semicolon_utf8_with_map_and_portfolio(tmp_path):
     assert got[0]["datetime"] == "2026-10-13 00:00:00" and got[1]["side"] == "sell"
 
 
+def test_known_names_and_isins():
+    m = nj.build_map(None, None)
+    assert nj.lookup(m, "Alphabet Inc. Class C", "") == nj.lookup(m, "Alphabet C", "") == "GOOG.US" and nj.lookup(m, "Alphabet A", "") == "GOOGL.US"
+    assert nj.lookup(m, "Apple", "US0378331005") == "AAPL.US" and nj.lookup(m, "Volvo B", "SE0000115446") == "VOLV-B.ST"
+    assert nj.lookup(m, "Apple Hospitality REIT", "") is None  # korte, tvetydige navne matches ikke
+
+
 def test_number_parsing():
     assert nj.num("1 234,56") == 1234.56 and nj.num("-21 480,00") == -21480.0
     assert nj.num("1.234,5") == 1234.5 and nj.num("1,234.5") == 1234.5 and nj.num("") == 0.0

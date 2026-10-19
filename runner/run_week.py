@@ -128,10 +128,25 @@ SYMBOL_GUIDANCE = """
 ## Symbols (Vibetrad)
 Always write US stocks and ETFs with the .US suffix (ACWI.US, IEF.US, GLD.US, VNQ.US, SPCX.US). Without a suffix
 Vibe-Trading treats the symbol as a China A-share and the call fails ("no price data"). Nordic listings: NOVO-B.CO,
-INVE-B.ST. If a tool call fails or returns no data, say so in the report and never present a number from that call.
+INVE-B.ST. Danish and other Nordic stocks keep their exchange suffix and are never .US (Novo Nordisk B = NOVO-B.CO,
+not NOVO.US). Currency pairs are FX symbols (USDSEK=X, DKKSEK=X), never DKK.US or USD.US.
+If a tool call fails or returns no data, say so in the report and never present a number from that call.
 Never state a brokerage fee (courtage) or FX fee unless it is given in your instructions.
 Market capitalisation: use the whole-company figure from the Vibetrad facit. Never compute it from one share class's
 share count (Alphabet has A, B and C shares, so GOOGL alone is far too low).
+"""
+# Alle agenter får investorens rammer: ISK hos Nordnet som privatkunde (kørslen 19/10 anbefalede ACWI.US, som ikke kan købes)
+ISK_GUIDANCE = """
+
+## Investor constraints (Vibetrad)
+The investor is a retail client who invests only through a Swedish ISK account at Nordnet.
+- US- and Canada-domiciled ETFs (ACWI.US, EFV.US, VSS.US, IEUR.US, SPY.US, IEF.US, GLD.US ...) cannot be bought by EU
+  retail investors (PRIIPs/MiFID II, since 2018). Use them only as data proxies. Whenever you suggest a fund or ETF, name
+  an EU-domiciled UCITS equivalent (e.g. "iShares MSCI ACWI UCITS ETF" instead of ACWI.US) or a Nordnet index fund, and
+  say that the exact instrument must be confirmed on Nordnet. Never tell the investor to buy a US-domiciled ETF.
+- No options, futures, short selling or leverage: do not propose option strategies or derivative hedges. Single US,
+  Nordic and European stocks are fine.
+- Cash that the portfolio text marks as reserved (e.g. for an open order) is not available for new purchases.
 """
 # Agenter med disse værktøjer henter kurser og får symbol-instruksen.
 SYMBOL_TOOLS = {"get_market_data", "portfolio_risk_xray", "backtest", "technical_indicators", "quantlib_call", "etf_holdings",
@@ -151,11 +166,17 @@ Your goal lists the other teams' conclusions. Use all of them:
 - Add a table "Uenigheder mellem teams" (team | deres anbefaling | din beslutning | hvorfor) for every point where a team
   recommends something different from you (selling vs holding, timing, target weights, an order). Write "Ingen" only if
   no team disagrees. Never write that all teams agree without checking each team's recommendation.
-- Reproduce the risk committee's loss scenarios in SEK (one row per scenario) and use them in the risk budget.
+- Reproduce ALL FOUR of the risk committee's loss scenarios in SEK, one row each, including USD/SEK -10 % (recompute
+  from the facit values if the committee's number is missing), and use them in the risk budget.
 - For every main decision add one line "Jeg tager fejl, hvis …" with a measurable condition.
 - Transition plan: use the monthly deposit in the portfolio text and the "Indskud" line in the datatjek facit. For each
   step state how many months of deposits it takes at unchanged prices and whether it needs any sale.
-- If a team or agent delivered no report, say so in "Datakvalitet" instead of relying on its conclusions.
+- If a team or agent delivered no report, say so in "Datakvalitet" instead of relying on its conclusions. This includes
+  the analysts in your own team: if a teammate's output is only a plan or empty, name it. Never write that there are no
+  gaps when one exists.
+- Name the teams exactly as they appear in your goal and count them correctly.
+- Fund and ETF suggestions must be buyable at Nordnet (see "Investor constraints"): name UCITS funds/ETFs, and treat
+  US-listed tickers only as proxies.
 """}}
 
 # Rækkefølge i rapporten og som input til CIO'en (CIO kører altid sidst).
@@ -338,6 +359,10 @@ def load_portfolio(raw: str | None) -> dict:
     p.setdefault("account", "ISK Nordnet")
     p.setdefault("currency", "SEK")
     p["cash_sek"] = float(p.get("cash_sek") or 0)
+    reserved = p.get("cash_reserved_sek")
+    if not isinstance(reserved, (int, float)) or isinstance(reserved, bool):
+        reserved = reserved_from_note(p.get("cash_note"))
+    p["cash_reserved_sek"] = round(min(max(float(reserved or 0), 0.0), p["cash_sek"]), 2)
     dep = p.get("monthly_deposit_sek")
     p["monthly_deposit_sek"] = float(dep) if isinstance(dep, (int, float)) and not isinstance(dep, bool) and 0 < dep < 10_000_000 else None
     cc = re.sub(r"[^\w .,/()+-]", "", str(p.get("courtage_class") or "")).strip()[:40]
@@ -350,6 +375,34 @@ def load_portfolio(raw: str | None) -> dict:
     p["next_reports_source"] = ({str(k).strip().upper(): str(v).strip().lower() for k, v in src.items()
                                  if str(v).strip().lower() in NEXT_REPORT_SOURCES} if isinstance(src, dict) else {})
     return p
+
+
+_AMOUNT = r"((?:\d{1,3}(?:[ .\u00a0\u202f]\d{3})+|\d+)(?:,\d{1,2})?)"
+_HELD = r"(?:reserver\w*|bundet|øremærket|afsat)"
+_RESERVED_PATTERNS = (
+    # "Heraf 2 400 SEK reserveret til åben limitordre", "2.400 kr. er bundet i ordren"
+    re.compile(_AMOUNT + r"\s*(?:SEK|kr\.?)(?=[^\d.;,]{0,30}?\b" + _HELD + r")", re.I),
+    # "Reserveret til ordre: 2 400 SEK", "bundet 2 400 SEK"
+    re.compile(r"\b" + _HELD + r"[^\d.;,]{0,30}?" + _AMOUNT + r"\s*(?:SEK|kr\b)", re.I),
+)
+
+
+def reserved_from_note(note: object) -> float:
+    """Beløb, som kontantnoten siger er reserveret (fx 'Heraf 2 400 SEK reserveret til åben limitordre').
+
+    Kun SEK/kr tæller; beløb i andre valutaer (fx limitkursen i DKK) ignoreres. Samme beløb fanget af begge
+    mønstre tælles én gang.
+    """
+    text = str(note or "")
+    spans: dict[tuple[int, int], float] = {}
+    for rx in _RESERVED_PATTERNS:
+        for m in rx.finditer(text):
+            spans[m.span(1)] = float(re.sub(r"[ .\u00a0\u202f]", "", m.group(1)).replace(",", "."))
+    return float(sum(spans.values()))
+
+
+def free_cash(p: dict) -> float:
+    return max(float(p.get("cash_sek") or 0) - float(p.get("cash_reserved_sek") or 0), 0.0)
 
 
 def cost_weights(p: dict) -> list[dict]:
@@ -375,8 +428,12 @@ def portfolio_text(p: dict) -> str:
         lines.append("- " + ", ".join(bits))
     if p.get("cash_sek"):
         note = f" ({p['cash_note']})" if p.get("cash_note") else ""
-        # Kun beløbet får mellemrum som tusindtalsskilletegn; noten beholder sine kommaer (318,40 DKK)
-        lines.append(f"- Kontant: {p['cash_sek']:,.0f}".replace(",", " ") + f" SEK{note}")
+        # Kun beløbet får mellemrum som tusindtalsskilletegn; noten beholder sine kommaer (fx 98,40 DKK)
+        line = f"- Kontant: {p['cash_sek']:,.0f}".replace(",", " ") + f" SEK{note}"
+        if p.get("cash_reserved_sek"):
+            line += (f". Ledig til nye køb: {free_cash(p):,.0f} SEK ({p['cash_reserved_sek']:,.0f} SEK er reserveret "
+                     "og kan ikke bruges)").replace(",", " ")
+        lines.append(line)
     if p.get("watchlist"):
         wl = "; ".join(f"{w.get('ticker')}: {w.get('note', '')}".strip(": ") for w in p["watchlist"] if isinstance(w, dict))
         lines.append(f"Overvågning/åbne ordrer: {wl}")
@@ -419,9 +476,16 @@ def yf_next_report(ticker: str) -> dt.date | None:
 
 def upcoming_reports(p: dict, ref: dt.datetime, horizon_days: int = 14,
                      lookup: Callable[[str], dt.date | None] | None = yf_next_report,
-                     verified: dict[str, str] | None = None) -> list[dict]:
-    """Regnskaber inden for horisonten. ``verified`` er datatjekkets krydstjekkede datoer og vinder."""
+                     verified: dict[str, str] | None = None,
+                     alternatives: dict[str, list[str]] | None = None) -> list[dict]:
+    """Regnskaber inden for horisonten. ``verified`` er datatjekkets krydstjekkede datoer og vinder.
+
+    ``alternatives`` er datoer, som en anden kilde giver. Ligger den valgte dato uden for horisonten, men en
+    anden kilde siger en dato inden for, tages regnskabet med på den tidligste dato (risiko først), og den
+    valgte dato står i ``alt_dates``, så regnskabsteamet ved, at datoen er usikker.
+    """
     today = ref.date()
+    end = today + dt.timedelta(days=horizon_days)
     found = []
     for h in p["holdings"]:
         if h["kind"] in ("cash", "fund", "etf"):
@@ -440,8 +504,18 @@ def upcoming_reports(p: dict, ref: dt.datetime, horizon_days: int = 14,
             d2 = lookup(h["ticker"])
             if d2:
                 d, src = d2, "yahoo"
-        if d and today <= d <= today + dt.timedelta(days=horizon_days):
-            found.append({"ticker": h["ticker"], "name": h["name"], "date": d.isoformat(), "source": src})
+        alts: list[dt.date] = []
+        for a in (alternatives or {}).get(h["ticker"], []) if src == "datatjek" else []:
+            with contextlib.suppress(ValueError, TypeError):
+                alts.append(dt.date.fromisoformat(str(a)[:10]))
+        alts = sorted(a for a in set(alts) if a >= today and a != d)
+        if d and not today <= d <= end and alts and alts[0] <= end:
+            alts, d, src = sorted(set(alts[1:] + [d])), alts[0], "datatjek (tidligste kilde)"
+        if d and today <= d <= end:
+            row = {"ticker": h["ticker"], "name": h["name"], "date": d.isoformat(), "source": src}
+            if alts:
+                row["alt_dates"] = [a.isoformat() for a in alts]
+            found.append(row)
     return sorted(found, key=lambda x: x["date"])
 
 
@@ -470,10 +544,13 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
     wtxt = ", ".join(f"{w['ticker']} {w['weight_cost_pct']:g} %" for w in weights if w["weight_cost_pct"] is not None)
     iso_week = dt.date.fromisoformat(week["from"]).isocalendar().week
     dep = p.get("monthly_deposit_sek")
-    new_money = (f"nye indskud (ca. {dep:,.0f} SEK om måneden) og kontanten".replace(",", " ") if dep
-                 else "nye indskud og kontanten")
+    cash_part = (f"den ledige kontant ({free_cash(p):,.0f} SEK; resten er reserveret)" if p.get("cash_reserved_sek")
+                 else f"kontanten ({float(p.get('cash_sek') or 0):,.0f} SEK)").replace(",", " ")
+    new_money = (f"nye indskud (ca. {dep:,.0f} SEK om måneden)".replace(",", " ") + f" og {cash_part}" if dep
+                 else f"nye indskud og {cash_part}")
     scope = (f"Fordel kun {new_money}: sælg ikke de eksisterende aktier, og fordel ikke hele porteføljens værdi. "
-             "Angiv ingen kurtagesats. ")
+             "Angiv ingen kurtagesats. Foreslå kun UCITS-fonde og -ETF'er, der kan købes hos Nordnet (fx iShares MSCI "
+             "ACWI UCITS ETF); amerikanske ETF'er som ACWI.US er kun dataproxy og kan ikke købes på en ISK. ")
 
     plan: list[dict] = [{
         "preset": "risk_committee", "reason": "Fast ugentligt risikoudvalg (spillebog)",
@@ -488,10 +565,14 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
     }]
     if plan_kind == "fuld":
         for r in (reports or [])[:2]:
+            day = dmy(dt.date.fromisoformat(r["date"]))
+            alt = ", ".join(dmy(dt.date.fromisoformat(a)) for a in r.get("alt_dates") or [])
+            unsure = (f"; kilderne er uenige: en anden kilde siger {alt}. Bekræft datoen på selskabets investor-side, "
+                      "før du planlægger omkring den") if alt else ""
             plan.append({
                 "preset": "earnings_research_desk",
-                "reason": f"Regnskab {dmy(dt.date.fromisoformat(r['date']))} (spillebog: før hvert regnskab)",
-                "vars": {"target": f"{r['ticker']} (regnskab {dmy(dt.date.fromisoformat(r['date']))}; skriv på dansk, beløb også i SEK)"
+                "reason": f"Regnskab {day}" + (f" (eller {alt})" if alt else "") + " (spillebog: før hvert regnskab)",
+                "vars": {"target": f"{r['ticker']} (regnskab {day}{unsure}; skriv på dansk, beløb også i SEK)"
                                    + (SPACEX_HINT if r["ticker"].startswith("SPCX") else "")},
                 "context": r,
             })
@@ -730,6 +811,8 @@ def prepare_shellfree_presets(dst: Path, src: Path | None = None, brief: str = "
             if SYMBOL_TOOLS & set(agent.get("tools") or []):
                 agent["system_prompt"] = str(agent.get("system_prompt", "")).rstrip() + SYMBOL_GUIDANCE
                 touched = True
+            agent["system_prompt"] = str(agent.get("system_prompt", "")).rstrip() + ISK_GUIDANCE
+            touched = True
             if brief:
                 agent["system_prompt"] = str(agent.get("system_prompt", "")).rstrip() + "\n\n" + brief.strip() + "\n"
                 touched = True
@@ -1027,6 +1110,121 @@ class FakeRuntime:
         return True
 
 
+# ---------------------------------------------------------------------------
+# Rettelser i Vibe-Trading 0.1.16 (anvendes i processen, før SwarmRuntime kører)
+# ---------------------------------------------------------------------------
+# Kørslen 19/10/2026: hver worker overskrev ALLE værktøjsresultater undtagen de 3 nyeste med "[cleared]" i
+# hver iteration. Agenter, der hentede 5–6 kurser, mistede dermed tallene, før de skrev rapporten, og leverede
+# en plan eller gentog kaldene. Vibetrad beholder resultaterne, indtil de samlet fylder mere end budgettet, og
+# rydder så de ældste ned til halvdelen (få ændringer → prompt-cachen holder), med en markør der siger, at
+# kaldet lykkedes.
+VT_TOOL_CONTEXT_CHARS = 40_000
+_VT_CLEARED = "[CLEARED FROM CONTEXT"
+_VT_MICROCOMPACT = (
+    '        tool_msgs = [m for m in messages if m.get("role") == "tool"]\n'
+    "        if len(tool_msgs) > _KEEP_RECENT_TOOLS:\n"
+    "            for msg in tool_msgs[:-_KEEP_RECENT_TOOLS]:\n"
+    '                content = msg.get("content", "")\n'
+    "                if isinstance(content, str) and len(content) > 100:\n"
+    '                    msg["content"] = "[cleared]"\n'
+)
+
+
+def _tool_context_budget() -> int:
+    try:
+        return max(5_000, int(os.environ.get("VT_TOOL_CONTEXT_CHARS", VT_TOOL_CONTEXT_CHARS)))
+    except ValueError:
+        return VT_TOOL_CONTEXT_CHARS
+
+
+def _vibetrad_compact_tool_results(messages: list, keep_recent: int = 3, budget: int | None = None) -> int:
+    """Ryd gamle værktøjsresultater først, når de tilsammen fylder mere end ``budget`` tegn.
+
+    De ``keep_recent`` nyeste røres aldrig. Ellers ryddes de ældste (over 100 tegn), indtil resten er under
+    halvdelen af budgettet. Returnerer antal ryddede resultater.
+    """
+    budget = _tool_context_budget() if budget is None else budget
+    tools = [m for m in messages if isinstance(m, dict) and m.get("role") == "tool"]
+
+    def size(m: dict) -> int:
+        c = m.get("content")
+        return len(c) if isinstance(c, str) else 0
+
+    total = sum(size(m) for m in tools)
+    if total <= budget:
+        return 0
+    cleared = 0
+    for m in tools[:-keep_recent] if keep_recent > 0 else tools:
+        if total <= budget // 2:
+            break
+        c = m.get("content")
+        if not isinstance(c, str) or len(c) <= 100 or c.startswith(_VT_CLEARED):
+            continue
+        marker = (f"{_VT_CLEARED}: this tool call SUCCEEDED and returned {len(c)} characters. It was removed to "
+                  "keep the context small. Use the numbers you already noted from it; repeat the call only if you "
+                  "need exact figures you did not note.]")
+        m["content"] = marker
+        total += len(marker) - len(c)
+        cleared += 1
+    return cleared
+
+
+def patch_vibe_trading() -> dict[str, str]:
+    """Anvend Vibetrads rettelser i Vibe-Trading. Fejler aldrig: status pr. rettelse til rapporten."""
+    status: dict[str, str] = {}
+    try:
+        import inspect
+
+        from src.swarm import worker as w
+
+        fn = w._run_worker_impl
+        if "_vibetrad_compact_tool_results" in fn.__code__.co_names:
+            status["tool_context"] = "ok (allerede anvendt)"
+        else:
+            src = inspect.getsource(fn)
+            if src.count(_VT_MICROCOMPACT) != 1:
+                status["tool_context"] = "ikke anvendt: Vibe-Tradings kode er ændret (opdatér rettelsen)"
+            else:
+                new = src.replace(_VT_MICROCOMPACT,
+                                  "        _vibetrad_compact_tool_results(messages, _KEEP_RECENT_TOOLS)\n")
+                import __future__
+
+                code = compile(new, inspect.getsourcefile(fn) or "<vibetrad>", "exec",
+                               flags=__future__.annotations.compiler_flag, dont_inherit=True)
+                w.__dict__["_vibetrad_compact_tool_results"] = _vibetrad_compact_tool_results
+                ns: dict[str, Any] = {}
+                exec(code, w.__dict__, ns)  # noqa: S102  (vores egen, kendte erstatning af én blok)
+                patched = ns["_run_worker_impl"]
+                patched.__doc__, patched.__module__ = fn.__doc__, fn.__module__
+                w._run_worker_impl = patched
+                status["tool_context"] = f"ok (budget {_tool_context_budget()} tegn)"
+    except Exception as exc:  # noqa: BLE001
+        status["tool_context"] = f"ikke anvendt: {type(exc).__name__}"
+    status["temperature"] = _patch_temperature()
+    return status
+
+
+# Claude-modeller af 5. generation afviser `temperature`. Vibe-Trading opdager det først ved første fejl, og i
+# kørslen 19/10/2026 fejlede de parallelle agenters første kald derfor, før de blev forsøgt igen.
+_NO_TEMPERATURE = re.compile(r"^claude-[a-z]+-5(?:$|[-.])")
+
+
+def _patch_temperature() -> str:
+    model = str(os.environ.get("LANGCHAIN_MODEL_NAME") or "").strip()
+    mode = os.environ.get("VT_TEMPERATURE", "auto").strip().lower()
+    if not model or mode in ("on", "send"):
+        return "ikke ændret"
+    if mode not in ("off", "omit") and not _NO_TEMPERATURE.match(model):
+        return "ikke ændret (modellen accepterer temperature)"
+    try:
+        from src.providers import llm
+
+        llm._ANTHROPIC_TEMPERATURE_UNSUPPORTED.add(model)
+        return "udelades fra første kald"
+    except Exception as exc:  # noqa: BLE001
+        return f"ikke anvendt: {type(exc).__name__}"
+
+
 def make_runtime(dry: bool) -> tuple[Any, Any, str]:
     if dry:
         fake = FakeRuntime(fail=filter(None, os.environ.get("VT_DRY_FAIL", "").split(",")),
@@ -1042,6 +1240,9 @@ def make_runtime(dry: bool) -> tuple[Any, Any, str]:
     store = SwarmStore(base_dir=get_swarm_runs_dir())
     runtime = SwarmRuntime(store=store, agent_config=load_swarm_agent_config())
     return runtime, store, version("vibe-trading-ai")
+
+
+VT_PATCHES: dict[str, str] = {}
 
 
 def validate_vars(preset: str, user_vars: dict, dry: bool) -> None:
@@ -1181,7 +1382,8 @@ def main(argv: list[str] | None = None) -> int:
     with quiet_fds(log_path):  # yfinance skriver advarsler, der kan nævne symboler
         verified = dtj.verified_reports(datacheck)
         reports = upcoming_reports(portfolio, ref, horizon_days=horizon,
-                                   lookup=None if args.dry_run or verified else yf_next_report, verified=verified)
+                                   lookup=None if args.dry_run or verified else yf_next_report, verified=verified,
+                                   alternatives=dtj.alternative_reports(datacheck))
     try:
         history = json.loads((results / "index.json").read_text("utf-8")).get("weeks", [])
     except Exception:
@@ -1197,6 +1399,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             runtime, store, vt_version = make_runtime(args.dry_run)
             if not args.dry_run:
+                VT_PATCHES.update(patch_vibe_trading())
                 brief = "\n\n".join(b for b in (dtj.agent_brief(datacheck), fr.agent_brief(fred_snap)) if b)
                 shellfree = prepare_shellfree_presets(Path.home() / ".vibe-trading" / "swarm" / "presets", brief=brief,
                                                       eodhd_ready=bool(eodhd_info.get("tool") and eodhd_info.get("key")),
@@ -1207,6 +1410,8 @@ def main(argv: list[str] | None = None) -> int:
             runtime = store = None
     if shellfree:
         con.say(f"Kvant-værktøjer i stedet for shell i {len(shellfree)} presets")
+    if VT_PATCHES:
+        con.say("Vibe-Trading-rettelser: " + "; ".join(f"{k} {v}" for k, v in VT_PATCHES.items()))
     if runtime is None:
         con.say(f"FEJL ved opstart af Vibe-Trading ({errors[-1]['type']}). Detaljer ligger krypteret i rapporten.")
 
@@ -1260,12 +1465,13 @@ def main(argv: list[str] | None = None) -> int:
 
     payload = {
         "schema": SCHEMA, "generated_at": generated, "week": week, "status": status,
-        "vibe_trading_version": vt_version,
+        "vibe_trading_version": vt_version, "vibe_trading_patches": dict(VT_PATCHES),
         "model": os.environ.get("LANGCHAIN_MODEL_NAME"), "provider": os.environ.get("LANGCHAIN_PROVIDER"),
         "dry_run": args.dry_run, "trigger": args.event,
         "portfolio": {"account": portfolio["account"], "as_of": portfolio.get("as_of"),
                       "weight_policy": portfolio.get("weight_policy", "limit"),
                       "holdings": portfolio["holdings"], "cash_sek": portfolio["cash_sek"],
+                      "cash_reserved_sek": portfolio.get("cash_reserved_sek") or 0.0,
                       "weights_cost": cost_weights(portfolio)},
         "upcoming_reports": reports, "plan": [{"preset": s["preset"], "reason": s["reason"]} for s in plan],
         "datacheck": datacheck, "eodhd": eodhd_info, "fred": fred_snap,

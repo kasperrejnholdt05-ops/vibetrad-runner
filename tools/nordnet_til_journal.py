@@ -51,10 +51,23 @@ SIDES = {
     "dividend": ["utdelning", "udbytte", "utbytte", "osinko", "dividend"],
 }
 # Kendte navne/ISIN → Vibe-Trading-symbol (amerikanske aktier skal have .US-suffiks i Vibe-Trading).
+# ISIN matcher præcist og vinder. Navne matcher som delstreng, og det længste navn vinder ("alphabet c" før
+# "alphabet"). Alt andet kan tilføjes med --map eller --portfolio-json.
 KNOWN = {
-    "alphabet": "GOOGL.US", "nvidia": "NVDA.US", "broadcom": "AVGO.US", "spacex": "SPCX.US",
-    "space exploration": "SPCX.US", "novo nordisk": "NOVO-B.CO",
-    "US02079K3059": "GOOGL.US", "US67066G1040": "NVDA.US", "US11135F1012": "AVGO.US", "DK0062498333": "NOVO-B.CO",
+    # navne (kun entydige)
+    "alphabet": "GOOGL.US", "alphabet c": "GOOG.US", "alphabet inc. class c": "GOOG.US",
+    "alphabet inc class c": "GOOG.US", "nvidia": "NVDA.US", "broadcom": "AVGO.US",
+    "spacex": "SPCX.US", "space exploration": "SPCX.US", "microsoft": "MSFT.US", "tesla": "TSLA.US",
+    "meta platforms": "META.US", "amazon.com": "AMZN.US", "berkshire hathaway b": "BRK-B.US",
+    "novo nordisk": "NOVO-B.CO", "hennes & mauritz": "HM-B.ST", "a.p. møller - mærsk b": "MAERSK-B.CO",
+    # ISIN
+    "US02079K3059": "GOOGL.US", "US02079K1079": "GOOG.US", "US67066G1040": "NVDA.US", "US11135F1012": "AVGO.US",
+    "US0378331005": "AAPL.US", "US5949181045": "MSFT.US", "US0231351067": "AMZN.US", "US30303M1027": "META.US",
+    "US88160R1014": "TSLA.US", "US0846707026": "BRK-B.US", "NL0010273215": "ASML.AS",
+    "DK0062498333": "NOVO-B.CO", "DK0010244508": "MAERSK-B.CO", "DK0010181759": "CARL-B.CO",
+    "DK0060094928": "ORSTED.CO", "DK0061539921": "VWS.CO",
+    "SE0000115446": "VOLV-B.ST", "SE0000108656": "ERIC-B.ST", "SE0015811963": "INVE-B.ST", "SE0000106270": "HM-B.ST",
+    "GB0009895292": "AZN.ST", "FI4000297767": "NDA-SE.ST", "NO0010096985": "EQNR.OL", "FI0009000681": "NOKIA.HE",
 }
 
 

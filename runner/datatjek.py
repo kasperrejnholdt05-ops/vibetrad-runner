@@ -223,7 +223,9 @@ class VibeTradingSource:
                     "market_cap": _num(price.get("marketCap")) or _num(sd.get("marketCap")),
                     "trailing_pe": _num(sd.get("trailingPE")), "forward_pe": _num(sd.get("forwardPE")),
                     "earnings_dates": sorted(d for d in (_date(x) for x in ce.get("earningsDate") or []) if d),
-                    "earnings_estimate": bool(_num(ce.get("isEarningsDateEstimate"))), "source": "yahoo"}
+                    "earnings_estimate": bool(_num(ce.get("isEarningsDateEstimate"))),
+                    # kun et eksplicit "ikke et estimat" fra Yahoo tæller som bekræftet (mangler feltet, er det ukendt)
+                    "earnings_confirmed": _num(ce.get("isEarningsDateEstimate")) == 0.0, "source": "yahoo"}
         except Exception as exc:  # noqa: BLE001
             self.errors.append(f"Profil (Yahoo) {type(exc).__name__}")
         if not info.get("earnings_dates"):
@@ -741,16 +743,30 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
             counts: dict[str, int] = {}
             for v in known.values():
                 counts[v] = counts.get(v, 0) + 1
-            best = max(counts, key=lambda d: (counts[d], d == cand["EODHD"], d == cand["Vibe-Trading"]))
+            confirmed = set()
+            if cand["Vibe-Trading"] and vt_prof.get("earnings_confirmed") and not vt_prof.get("earnings_estimate"):
+                confirmed.add(cand["Vibe-Trading"])
+            if cand["portefølje"] and psrc.get(code) == "manuel":  # skrevet ind i Vibetrad, typisk fra selskabets IR
+                confirmed.add(cand["portefølje"])
+            # Flest kilder vinder. Ved uafgjort: en bekræftet dato, ellers den TIDLIGSTE (risiko først: hellere
+            # forberedt for tidligt end overrasket). Før 19/10/2026 vandt EODHD ved uafgjort, og SpaceX fik
+            # EODHD's estimat 03/11 i stedet for Yahoos 20/10, som var den rigtige dato.
+            best = max(counts, key=lambda d: (counts[d], d in confirmed, -dt.date.fromisoformat(d).toordinal()))
             in_window = bool(window and window[0] <= best <= window[1])
             r["verified"] = best
+            r["confirmed"] = best in confirmed
             r["agree"] = counts[best] + (1 if in_window else 0)
+            # Andre datoer, som en kilde giver: vises i facit, og en tidligere dato kan udløse regnskabsteamet
+            r["alternatives"] = sorted({v for v in known.values() if not near(v, best)})
             off = [f"{k} {dmy(v)}" for k, v in known.items() if not near(v, best)]
             if window and not in_window:
                 off.append(f"Vibe-Trading {dmy(window[0])}–{dmy(window[1])}")
             if off:
                 r["status"] = "warn"
-                r["notes"].append(f"datoer afviger: {', '.join(off)} (flest siger {dmy(best)})")
+                runner_up = max((n for d, n in counts.items() if d != best), default=0)
+                why = ("flest kilder" if counts[best] > runner_up else
+                       "bekræftet dato" if best in confirmed else "uenighed: den tidligste dato er valgt")
+                r["notes"].append(f"datoer afviger: {', '.join(off)} (valgt {dmy(best)}: {why})")
                 if cand["portefølje"] and not near(cand["portefølje"], best) and r["agree"] >= 2:
                     r["notes"].append("ret datoen i VT_PORTFOLIO (Vibetrad → Overvågning/Beholdninger)")
             elif r["agree"] == 1:
@@ -811,6 +827,7 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
     week_sek, pl, deposit_path = _week_pl_deposits(p, prow, chosen_px, week, total)
     portfolio = {"value_sek": value, "chosen": chosen_key if total is not None else None, "total_sek": total,
                  "diff_pct": round(vd, 2) if vd is not None else None, "cash_sek": p.get("cash_sek") or 0.0,
+                 "cash_reserved_sek": p.get("cash_reserved_sek") or 0.0,
                  "rows": prow, "status": pstatus, "missing_qty": no_qty, "week_sek": week_sek, "pl": pl,
                  "monthly_deposit_sek": p.get("monthly_deposit_sek"), "deposit_path": deposit_path}
     if no_qty:
@@ -880,6 +897,11 @@ def verified_reports(dc: dict | None) -> dict[str, str]:
     return {e["ticker"]: e["verified"] for e in (dc or {}).get("earnings", []) if e.get("verified")}
 
 
+def alternative_reports(dc: dict | None) -> dict[str, list[str]]:
+    """Regnskabsdatoer, som mindst én kilde giver, men som ikke blev valgt (pr. ticker, sorteret)."""
+    return {e["ticker"]: list(e["alternatives"]) for e in (dc or {}).get("earnings", []) if e.get("alternatives")}
+
+
 def agent_brief(dc: dict | None, limit: int = 5600) -> str:
     """Kompakt facit (markdown), som alle agenter får i deres instruks."""
     if not dc:
@@ -900,8 +922,11 @@ def agent_brief(dc: dict | None, limit: int = 5600) -> str:
         src = r.get("eodhd") or r.get("vt") or {}
         pr = by_t.get(r["ticker"], {})
         e = er.get(r["ticker"]) or {}
-        when = {"AfterMarket": " efter lukning", "BeforeMarket": " før åbning"}.get(e.get("eodhd_when") or "", "")
-        rep = (dmy(e.get("verified")) + when + (f" ({e.get('agree')} {'kilde' if e.get('agree') == 1 else 'kilder'})" if e.get("agree") else "")) if e.get("verified") else "–"
+        when = ({"AfterMarket": " efter lukning", "BeforeMarket": " før åbning"}.get(e.get("eodhd_when") or "", "")
+                if e.get("eodhd") == e.get("verified") else "")
+        alt = (f"; anden kilde: {', '.join(dmy(d) for d in e['alternatives'])}" if e.get("alternatives") else "")
+        rep = (dmy(e.get("verified")) + when + (f" ({e.get('agree')} {'kilde' if e.get('agree') == 1 else 'kilder'}{alt})"
+                                                if e.get("agree") else "")) if e.get("verified") else "–"
         w = (f"{_nf(pr.get('weight_pct'), 1)} %" + (f" ({lim} {pr['max_weight']:g} %)" if pr.get("over_max") else "")) if pr.get("weight_pct") is not None else "–"
         wk = _sp(src.get("week_pct")) + (f" / {_sp(pr['week_pct_sek'])}" if pr.get("week_pct_sek") is not None else "")
         lines.append(f"| {r['name']} ({r['ticker']}) | {_nf(src.get('close'))} {eo.currency_of(r['ticker']) or ''} "
@@ -910,7 +935,10 @@ def agent_brief(dc: dict | None, limit: int = 5600) -> str:
                     for f in dc.get("fx", []))
     pf = dc.get("portfolio", {})
     lines.append("")
-    lines.append(f"{fx} · Kontant {_nf(pf.get('cash_sek'), 0)} SEK · I alt {_nf(pf.get('total_sek'), 0)} SEK "
+    res = pf.get("cash_reserved_sek") or 0
+    cash = f"Kontant {_nf(pf.get('cash_sek'), 0)} SEK" + (
+        f" (heraf {_nf(res, 0)} SEK reserveret, {_nf(max((pf.get('cash_sek') or 0) - res, 0), 0)} SEK ledig)" if res else "")
+    lines.append(f"{fx} · {cash} · I alt {_nf(pf.get('total_sek'), 0)} SEK "
                  f"(markedsværdi, {('EODHD' if pf.get('chosen') == 'eodhd' else 'Vibe-Trading')}).")
     ws = pf.get("week_sek")
     if ws:
