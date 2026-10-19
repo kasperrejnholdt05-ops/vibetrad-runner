@@ -27,6 +27,7 @@ import contextlib
 import datetime as dt
 import gzip
 import json
+import logging
 import os
 import re
 import secrets
@@ -79,8 +80,9 @@ EXTRA_SKILLS = {
     "earnings_research_desk": {"*last*": ["private-company-research"]},
     "fundamental_research_team": {"*last*": ["private-company-research"]},
 }
-SPACEX_HINT = (" Selskabet er nyligt børsnoteret med kort kurs- og regnskabshistorik: brug skill'en "
-               "private-company-research (load_skill) som supplerende ramme.")
+SPACEX_HINT = (" Selskabet er nyligt børsnoteret med kort kurs- og regnskabshistorik: behandl det som et nyligt privat "
+               "selskab (ejerstruktur og udvanding, kapitalrunder og gæld, kundekoncentration, lock-up), og sig tydeligt, "
+               "hvor historikken er for kort til et tal. Agenter med skill'en private-company-research kan bruge den.")
 # Ekstra værktøjer pr. preset → agent-id. "*" = alle agenter i presettet, "*data*" = agenter med get_market_data.
 # Preset-nøglen "*" gælder alle presets. Værktøjer, der ikke er tilgængelige (fx get_macro_series uden
 # FRED_API_KEY, get_eodhd_data uden EODHD_API_KEY), udelades stille af Vibe-Trading.
@@ -297,6 +299,9 @@ window that answers the question, and note the numbers you need as soon as they 
 beats no report: never end with a plan or a promise.
 Report the numbers you computed, the inputs and the data window. If a figure truly cannot be computed, say exactly why
 and continue with what you have.
+Call `load_skill` only for skills in your own allowlist (listed in your skill descriptions); if your role text names
+another skill, skip it and continue. A synthesis from upstream reports and the verified facts needs no tool calls;
+a figure you compute yourself does.
 """
 
 DEFAULT_GOAL = (
@@ -883,25 +888,79 @@ def cio_digest(runs: list[dict], limit: int = 16000) -> str:
     og beslutninger (ikke indledningen). Teams uden rapport nævnes, så CIO'en ikke tror, at de er enige.
     Overskriften tæller teams, så CIO'en ikke tæller forkert (19/10/2026 skrev den "alle fire teams" om seks)."""
     done = [r for r in runs if r.get("status") == "completed" and r.get("final_report")]
-    missing = [r for r in runs if r not in done]
-    if not done and not missing:
+    # Et team, der fejlede, blev stoppet på tid eller budget, kan stadig have færdige agenter med rapport
+    # (Vibe-Trading markerer hele kørslen "failed", når én agent fejler, og synteseagenten blokeres). Deres
+    # arbejde gives videre som delrapport, så CIO'en ikke mister fx regnskabsanalysen, fordi optionsagenten faldt.
+    partial = [r for r in runs if r not in done and partial_reports(r)]
+    missing = [r for r in runs if r not in done and r not in partial]
+    if not done and not missing and not partial:
         return ""
     names = ", ".join(r.get("label", r["preset"]) for r in done) or "ingen"
+    part_names = ", ".join(r.get("label", r["preset"]) for r in partial)
     miss_names = ", ".join(r.get("label", r["preset"]) for r in missing) or "ingen"
     intro = (f"\n\n## Konklusioner fra ugens øvrige Vibe-Trading-teams\n{len(done)} team(s) med rapport ({names}); "
-             f"{len(missing)} uden rapport ({miss_names}). Brug disse tal, når du tæller teams. Brug alle konklusioner "
+             + (f"{len(partial)} med delrapport fra enkelte agenter ({part_names}); " if partial else "")
+             + f"{len(missing)} uden rapport ({miss_names}). Brug disse tal, når du tæller teams. Brug alle konklusioner "
              "i syntesen, og sig hvor du er uenig.\n")
     notes = [f"### {r.get('label', r['preset'])}: ingen rapport ({r.get('status')}"
              + (f": {r['skip_reason']}" if r.get("skip_reason") else "") + ")" for r in missing]
     room = limit - len(intro) - sum(len(n) + 2 for n in notes)
-    share = max(800, room // max(1, len(done)))
+    share = max(800, room // max(1, len(done) + len(partial)))
     parts = []
     for r in done:
         head = f"### {r.get('label', r['preset'])}\n"
         no_rep = [t.get("role") for t in r.get("tasks", []) if t.get("report") in ("empty", "plan_only")]
         flag = f"(Agenter uden rapport i teamet: {', '.join(no_rep)})\n" if no_rep else ""
         parts.append(head + flag + report_digest(r["final_report"], share - len(head) - len(flag)))
+    for r in partial:
+        reps = partial_reports(r)
+        failed = [t.get("role") for t in r.get("tasks", []) if t.get("status") in ("failed", "blocked", "cancelled")]
+        head = (f"### {r.get('label', r['preset'])}: delrapport ({r.get('status')}; ingen samlet rapport"
+                + (f", fejlet/blokeret: {', '.join(failed)}" if failed else "") + ")\n")
+        each = max(300, (share - len(head)) // len(reps))
+        body = "\n\n".join(f"#### {role}\n" + report_digest(text, each - len(role) - 6) for role, text in reps)
+        parts.append(head + body)
     return intro + "\n\n".join(parts + notes)
+
+
+_ERROR_KINDS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"Blocked: upstream not completed", re.I), "blokeret af en fejlet agent"),
+    (re.compile(r"output contract not met: data agent produced no tool calls", re.I),
+     "svar uden værktøjskald afvist af Vibe-Trading (leverancekontrakt)"),
+    (re.compile(r"output contract not met: plan-only", re.I), "kun en plan (leverancekontrakt)"),
+    (re.compile(r"output contract not met: (?:empty|raw tool-result|unparsed|explicitly fabricated)", re.I),
+     "tomt eller ubrugeligt svar (leverancekontrakt)"),
+    (re.compile(r"output contract not met", re.I), "leverance afvist af Vibe-Trading (leverancekontrakt)"),
+    (re.compile(r"Failed to render prompt template", re.I), "prompt-skabelon kunne ikke udfyldes"),
+    (re.compile(r"content_filter_circuit_breaker", re.I), "svar blokeret af indholdsfilter"),
+    (re.compile(r"LLM call failed at iteration (\d+).*?(prompt is too long|context.?length|too many tokens)", re.I | re.S),
+     r"LLM-kald fejlede i iteration \1 (konteksten for lang)"),
+    (re.compile(r"LLM call failed at iteration (\d+).*?(rate.?limit|overloaded|529)", re.I | re.S),
+     r"LLM-kald fejlede i iteration \1 (overbelastning/rate limit)"),
+    (re.compile(r"LLM call failed at iteration (\d+).*?(?:status[_ ]code|Error code|HTTP)[:= ]+(\d{3})", re.I | re.S),
+     r"LLM-kald fejlede i iteration \1 (HTTP \2)"),
+    (re.compile(r"LLM call failed at iteration (\d+)", re.I), r"LLM-kald fejlede i iteration \1"),
+    (re.compile(r"exceeded layer deadline|timed out|timeout", re.I), "tidsgrænse"),
+    (re.compile(r"worker did not complete \(status=(\w+)\)", re.I), r"agenten afsluttede ikke (\1)"),
+]
+
+
+def _error_kind(error: str | None) -> str:
+    """Fejltypen uden fejlteksten (den kan rumme tickere eller beløb). Ukendte fejl bliver kun 'anden fejl'."""
+    text = str(error or "")
+    for pat, label in _ERROR_KINDS:
+        m = pat.search(text)
+        if m:
+            return m.expand(label) if "\\" in label else label
+    return "anden fejl"
+
+
+def partial_reports(run: dict) -> list[tuple[str, str]]:
+    """(rolle, tekst) for de agenter, der leverede en rapport i et team uden samlet rapport."""
+    if run.get("status") == "skipped":
+        return []
+    return [(t.get("role") or t.get("agent_id") or "agent", t["summary"]) for t in run.get("tasks", [])
+            if t.get("status") == "completed" and t.get("summary") and t.get("report") == "ok"]
 
 
 # Værktøjer, der kun kan bruges med en nøgle. Uden nøglen tilføjes de ikke (så agenterne ikke lover data, de ikke kan hente).
@@ -1485,7 +1544,92 @@ def patch_vibe_trading() -> dict[str, str]:
     status["temperature"] = _patch_temperature()
     status["prompt"] = _patch_worker_prompt()
     status["grounding"] = _patch_grounding()
+    status["retries"] = _patch_stream_retries()
+    status["contract"] = _patch_deliverable_contract()
     return status
+
+
+def _patch_deliverable_contract() -> str:
+    """Vibe-Trading 0.1.16 afviser en "data-agent" (ethvert værktøj ud over bash/filer/load_skill), der svarer uden et
+    eneste værktøjskald og uden report.md. Uden filværktøjer (fjernet 19/10/2026) findes report.md ikke, og de
+    syntetiserende agenter (strateg, redaktør, dommer, attribution) fik kvant-værktøjer af runneren og blev dermed
+    "data-agenter": svarede de ud fra de andre agenters rapporter og facit, blev de afvist, og hele teamet faldt
+    (fire af seks teams 19/10/2026 om aftenen, inkl. CIO'en). Kravet om værktøjskald slås fra, som før
+    rettelsen, hvor report.md altid opfyldte det; Vibe-Tradings øvrige kontrol (tomme svar, planer, rå
+    værktøjsresultater, "mock data") gælder stadig, og runneren markerer selv agenter med plan eller uden tekst."""
+    try:
+        from src.swarm import worker as w
+
+        if getattr(w._classify_deliverable, "_vibetrad", False):
+            return "ok (allerede anvendt)"
+        orig = w._classify_deliverable
+
+        def classify(summary: str, *, is_data_agent: bool, report_written: bool, data_tool_calls: int) -> str | None:
+            reason = orig(summary, is_data_agent=is_data_agent, report_written=report_written,
+                          data_tool_calls=data_tool_calls)
+            if reason and reason.startswith("data agent produced no tool calls"):
+                return None
+            return reason
+
+        classify._vibetrad = True  # type: ignore[attr-defined]
+        classify.__doc__ = orig.__doc__
+        w._vibetrad_orig_classify_deliverable = orig
+        w._classify_deliverable = classify
+        return "ok"
+    except Exception as exc:  # noqa: BLE001
+        return f"ikke anvendt: {type(exc).__name__}"
+
+
+def _stream_retry_plan(retries: int | None = None) -> tuple[int, list[float]]:
+    """Antal ekstra forsøg og ventetider (sekunder) for et LLM-kald, der fejler midlertidigt."""
+    try:
+        n = int(os.environ.get("VT_STREAM_RETRIES", "") or 4) if retries is None else retries
+    except ValueError:
+        n = 4
+    n = max(0, min(n, 10))
+    return n, [min(60.0, 5.0 * 2 ** i) for i in range(n)]
+
+
+def _patch_stream_retries() -> str:
+    """Vibe-Trading 0.1.16 prøver et LLM-kald igen præcis én gang, når udbyderen svarer 429/529 eller forbindelsen
+    falder; derefter er agenten fejlet, og med max_retries 1 i de fleste presets starter den forfra én gang og
+    fejler så hele teamet (fire af seks teams 19/10/2026 om aftenen, amerikansk spidsbelastning). Her prøves
+    midlertidige fejl op til VT_STREAM_RETRIES (standard 4) gange mere med stigende ventetid (5, 10, 20, 40 s;
+    Retry-After fra udbyderen respekteres), før fejlen gives videre. Endelige fejl (4xx undtagen 408/429) går
+    straks videre som før."""
+    try:
+        from src.providers import chat as c
+
+        if getattr(c.ChatLLM.stream_chat, "_vibetrad", False):
+            return "ok (allerede anvendt)"
+        orig = c.ChatLLM.stream_chat
+        n, delays = _stream_retry_plan()
+        if n == 0:
+            return "slået fra"
+
+        def stream_chat(self: Any, messages: Any, *args: Any, **kwargs: Any) -> Any:
+            should_cancel = kwargs.get("should_cancel")
+            for attempt in range(n + 1):
+                try:
+                    return orig(self, messages, *args, **kwargs)
+                except c.ProviderStreamError as exc:
+                    if not exc.retryable or attempt >= n or (should_cancel and should_cancel()):
+                        raise
+                    wait = delays[attempt]
+                    if exc.retry_after_s is not None:
+                        wait = min(60.0, max(wait, float(exc.retry_after_s)))
+                    logging.getLogger("vibetrad").warning("LLM-kald fejlede midlertidigt (forsøg %d af %d), venter %.0f s: %s",
+                                                          attempt + 1, n + 1, wait, type(exc.original).__name__)
+                    time.sleep(wait)
+            raise AssertionError("unreachable")  # pragma: no cover
+
+        stream_chat._vibetrad = True  # type: ignore[attr-defined]
+        stream_chat.__doc__ = orig.__doc__
+        c.ChatLLM._vibetrad_orig_stream_chat = orig
+        c.ChatLLM.stream_chat = stream_chat
+        return f"ok ({n} ekstra forsøg)"
+    except Exception as exc:  # noqa: BLE001
+        return f"ikke anvendt: {type(exc).__name__}"
 
 
 _VT_HARD_LIMIT = "You have a HARD LIMIT of 20 tool calls. After that you will be cut off. Work efficiently.\n\n"
@@ -1821,6 +1965,12 @@ def main(argv: list[str] | None = None) -> int:
         used_usd += float(r.get("est_cost_usd") or 0)
         nr = r.get("agents_without_report") or []
         miss = f" · {len(nr)} af {len(r.get('tasks') or [])} agenter uden rapport: {', '.join(nr)}" if nr else ""
+        if r["status"] not in ("completed", "skipped") and r.get("tasks"):
+            # Hvilke agenter faldt, og hvilke nåede at levere (kun roller og fejltype, aldrig fejlteksten)
+            bad = [f"{t.get('role')} ({t.get('status')}" + (f": {_error_kind(t.get('error'))}" if t.get("error") else "") + ")"
+                   for t in r["tasks"] if t.get("status") not in ("completed", None)]
+            ok = [t.get("role") for t in r["tasks"] if t.get("status") == "completed"]
+            miss += f" · agenter: {', '.join(bad) or 'ingen fejl registreret'}" + (f" · leverede: {', '.join(ok)}" if ok else "")
         con.say(f"· {label}: {r['status']} · {r.get('duration_s', 0)} s · {r.get('tokens_in', 0) + r.get('tokens_out', 0):,} tokens · {r.get('est_cost_usd', 0):.2f} USD".replace(",", " ") + miss)
 
     silence_rest(log_path)  # herfra når intet fra Vibe-Tradings tråde GitHub-loggen

@@ -125,7 +125,7 @@ Fjernet er også `write_file`, `read_file` og `edit_file` (uden dem viser Vibe-T
 
 Før hvert team skrives dets preset igen med ugens værdier: Vibe-Trading 0.1.16 erstatter kun `{goal}`-pladsholdere i opgaveteksten, ikke i agenternes systeminstruks, så `{portfolio}` og `{review_period}` stod ordret i instruksen. Runneren indsætter alle variabler (ikke `upstream_context`) og lægger teamets ekstra regler til.
 
-Samtidig får agenterne ekstra Vibe-Trading-skills: `research-discipline` (bias-tjekliste) på hvert teams sidste, syntetiserende agent, `investor-lenses` på CIO'en, `management-deep-dive` og `private-company-research` (rammen for nyligt børsnoterede selskaber som SpaceX) i værdikomitéen, og `private-company-research` hos regnskabsdesken og fundamental-teamet. Når målet er SPCX, får agenterne også en eksplicit henvisning til den. CIO'en får også `report_audit`, så den faktatjekker højst fem stikprøver af sine egne tal før aflevering og afslutter med "Faktatjek: PASS/FAIL". (Indtil 19/10/2026 fik agenterne flere skills, end de kunne nå at læse: i den kørsel brugte CIO'en sine første kald på at indlæse fire skills.)
+Samtidig får agenterne ekstra Vibe-Trading-skills: `research-discipline` (bias-tjekliste) på hvert teams sidste, syntetiserende agent, `investor-lenses` på CIO'en, `management-deep-dive` og `private-company-research` (rammen for nyligt børsnoterede selskaber som SpaceX) i værdikomitéen, og `private-company-research` hos regnskabsdesken og fundamental-teamet. Når målet er SPCX, får agenterne en linje om at behandle selskabet som et nyligt privat selskab (ejerstruktur, udvanding, lock-up); kun den sidste agent har selve skill'en, så de andre bedes ikke indlæse den (19/10/2026 kl. 18:43 fik tre agenter "afvist af allowlist" på det). CIO'en får også `report_audit`, så den faktatjekker højst fem stikprøver af sine egne tal før aflevering og afslutter med "Faktatjek: PASS/FAIL". (Indtil 19/10/2026 fik agenterne flere skills, end de kunne nå at læse: i den kørsel brugte CIO'en sine første kald på at indlæse fire skills.)
 
 ## CIO'ens input fra de andre teams
 
@@ -167,12 +167,16 @@ Risikoudvalget regner altid tabet i SEK i fire scenarier: den største position 
 
 ## Rettelser i Vibe-Trading 0.1.16
 
-Runneren retter fire ting i Vibe-Trading, mens kørslen står på. Der ændres ikke i den installerede pakke. Status står i GitHub-loggen ("Vibe-Trading-rettelser: …"), i rapporten (`vibe_trading_patches`) og i Vibetrad under Model.
+Runneren retter seks ting i Vibe-Trading, mens kørslen står på. Der ændres ikke i den installerede pakke. Status står i GitHub-loggen ("Vibe-Trading-rettelser: …"), i rapporten (`vibe_trading_patches`) og i Vibetrad under Model.
 
 - **Værktøjsresultater bevares.** I 0.1.16 overskriver hver agent alle værktøjsresultater undtagen de 3 nyeste med `[cleared]`, i hver iteration. En agent, der henter seks kurser, har dermed mistet de tre første, før den skriver, og må gentage kaldene eller skrive uden tallene. I kørslen 19/10/2026 skrev flere agenter, at resultater var "ryddet fra konteksten", før de kunne læse dem (fx optionskæden, kvartalsregnskabet og quantlib-modulerne). Runneren erstatter den ene blok i `_run_worker_impl`: resultaterne bevares, indtil de tilsammen fylder over 40 000 tegn (`VT_TOOL_CONTEXT_CHARS`). Så ryddes de ældste ned til halvdelen, og de 3 nyeste røres aldrig. Ryddede resultater får en markør, der siger, at kaldet lykkedes, eller at det fejlede (fejl-kuverter), så ingen agent citerer tal fra et fejlet kald. Korte resultater, hvor markøren ville fylde mere, ryddes ikke. Linjenumrene i Vibe-Tradings tracebacks er de samme som før. Det giver få ændringer i beskederne, så prompt-cachen holder. Hvis Vibe-Tradings kode ændrer sig, så blokken ikke findes, bruges originalen, og loggen siger "ikke anvendt".
 - **`temperature` udelades for Claude-modeller af 5. generation** (`claude-sonnet-5`, `claude-opus-5-5` …), som afviser feltet. Vibe-Trading opdager det ellers først ved den første fejl, og i kørslen 19/10/2026 fejlede de parallelle agenters første kald derfor. `VT_TEMPERATURE=on|off` tvinger valget.
 - **Agentinstruksen uden falsk grænse.** 0.1.16 skriver "You have a HARD LIMIT of 20 tool calls" og "Plan (0 tool calls): state your plan" i hver agents instruks, selv om grænsen ikke håndhæves (`max_iterations` er 50). I kørslen 19/10/2026 stoppede agenter efter 20 kald eller afleverede planen som rapport. Runneren pakker `build_worker_prompt` ind og erstatter de to linjer med en kort besked om at arbejde effektivt og aldrig slutte med en plan.
 - **Grounding kun på rigtige symboler.** `extract_symbols_from_user_vars` pakkes ind, så kun symboler, der står ordret i opgaveteksten, hentes (se Symboler og gebyrer).
+- **Leverancekontrakten uden krav om værktøjskald.** 0.1.16 afviser en "data-agent" (ethvert værktøj ud over bash, filer og load_skill), der svarer uden et eneste værktøjskald og uden report.md ("output contract not met"). Uden filværktøjer findes report.md ikke, og de syntetiserende agenter (strateg, redaktør, dommer, attribution) har kvant-værktøjer fra runneren og tæller som data-agenter: svarede de ud fra de andre agenters rapporter og facit, blev de afvist, synteseagenten blokeret og hele teamet markeret "failed". I kørslen 19/10/2026 kl. 18:43 faldt fire af seks teams sådan, inkl. CIO'en. `_classify_deliverable` pakkes ind, så netop det krav slås fra; tomme svar, planer, rå værktøjsresultater og "mock data" afvises stadig af Vibe-Trading, og runneren markerer selv agenter uden rapport.
+- **Flere forsøg ved midlertidige fejl fra Anthropic.** 0.1.16 prøver et LLM-kald igen præcis én gang ved 429/529 eller tabt forbindelse; derefter er agenten fejlet, og med `max_retries: 1` i de fleste presets starter den forfra én gang og fejler så teamet. `ChatLLM.stream_chat` pakkes ind, så midlertidige fejl prøves op til `VT_STREAM_RETRIES` (standard 4) gange mere med ventetid 5, 10, 20, 40 s (Retry-After respekteres). Endelige fejl (4xx undtagen 408/429) går straks videre.
+
+Et team, der alligevel fejler eller stoppes på tid eller budget, mister ikke de færdige agenters arbejde: deres rapporter gives videre til CIO'en som *delrapport* ("N med delrapport fra enkelte agenter"), og GitHub-loggen viser pr. agent, hvad der skete (fx `Earnings Desk Strategist (failed: svar uden værktøjskald afvist af Vibe-Trading (leverancekontrakt))`), aldrig selve fejlteksten.
 
 En integrationstest kører den rigtige ReAct-løkke i Vibe-Trading med en falsk LLM og otte kurskald: med rettelsen ser det sidste kald alle otte resultater, og i 0.1.16 uden rettelsen er fem af dem `[cleared]`. En anden test kører de to indpakninger mod den installerede Vibe-Trading og tjekker, at linjerne er væk, og at "NOVO" i en tekst ikke bliver til `NOVO.US`.
 
@@ -187,7 +191,7 @@ En integrationstest kører den rigtige ReAct-løkke i Vibe-Trading med en falsk 
 | `VT_CIO_RESERVE_USD` | `8` | Holdes altid tilbage til CIO-gennemgangen. |
 | `VT_PRICE_IN_PER_MTOK` / `VT_PRICE_OUT_PER_MTOK` | `2` / `10` | Pris pr. mio. tokens for claude-sonnet-5 (ind/ud) til estimatet. Tjek platform.claude.com → Usage. |
 | `VT_MAX_SWARMS` | `6` | Højst så mange teams pr. kørsel (CIO'en bevares altid). |
-| `VT_SWARM_TIMEOUT_MIN` | `45` | Et team, der kører længere, stoppes og markeres "Tidsgrænse" (`timeout`). De agenter, der nåede at levere, kommer med i rapporten. |
+| `VT_SWARM_TIMEOUT_MIN` | `40` | Et team, der kører længere, stoppes og markeres "Tidsgrænse" (`timeout`). De agenter, der nåede at levere, kommer med i rapporten. (Runnerens egen standard uden workflowet er 45.) |
 | `VT_MIN_SWARM_USD` | `0.5` | Et team startes ikke, hvis der er mindre end dette tilbage af kørslens budget. |
 | `VT_EARNINGS_DAYS` | `14` | Regnskabsdesken kører, når et regnskab er højst så mange dage væk. |
 | `VT_SKIP_PRESETS` | tom | Presets der skal springes over (kommasepareret). |
@@ -243,7 +247,7 @@ Opdatér `VT_PORTFOLIO` (Kopiér VT_PORTFOLIO i Vibetrad → `gh secret set VT_P
 
 ```bash
 pip install "cryptography>=42" pyyaml pytest pandas
-python -m pytest -q                      # 210 tests (integrationstestene for EODHD og Vibe-Trading-rettelserne kører kun, hvor vibe-trading-ai er installeret)
+python -m pytest -q                      # 215 tests (integrationstestene for EODHD og Vibe-Trading-rettelserne kører kun, hvor vibe-trading-ai er installeret)
 node tests/decrypt_webcrypto.mjs results/latest.enc.json 'adgangsfrase'   # dekrypterer en kuvert med WebCrypto præcis som Vibetrad-siden (testene bruger den, når node findes)
 VT_PORTFOLIO="$(cat runner/portfolio.example.json)" VT_RESULTS_PASSPHRASE=0123456789abcdef \
   python runner/run_week.py --dry-run --event workflow_dispatch --results /tmp/vt-results

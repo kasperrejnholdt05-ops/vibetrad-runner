@@ -989,6 +989,87 @@ def test_fifth_generation_claude_models_skip_temperature(model, omit):
     assert bool(rw._NO_TEMPERATURE.match(model)) is omit
 
 
+def test_stream_retry_plan_defaults_and_env(monkeypatch):
+    assert rw._stream_retry_plan() == (4, [5.0, 10.0, 20.0, 40.0])
+    monkeypatch.setenv("VT_STREAM_RETRIES", "6")
+    assert rw._stream_retry_plan() == (6, [5.0, 10.0, 20.0, 40.0, 60.0, 60.0])
+    monkeypatch.setenv("VT_STREAM_RETRIES", "tolv")
+    assert rw._stream_retry_plan()[0] == 4
+    monkeypatch.setenv("VT_STREAM_RETRIES", "0")
+    assert rw._stream_retry_plan() == (0, [])
+
+
+@pytest.mark.skipif(importlib.util.find_spec("src") is None, reason="Vibe-Trading er ikke installeret")
+def test_stream_retries_ride_out_overload_but_not_client_errors(monkeypatch):
+    from src.providers import chat as c
+
+    calls: list[str] = []
+    slept: list[float] = []
+    monkeypatch.setattr(rw.time, "sleep", lambda s: slept.append(s))
+
+    class Boom(Exception):
+        def __init__(self, code):
+            super().__init__(f"Error code: {code}")
+            self.status_code = code
+
+    def fake_stream(self, messages, *a, **k):
+        calls.append(messages)
+        if len(calls) <= 2:
+            raise c.ProviderStreamError(provider="anthropic", model="m", original=Boom(529))
+        return "svar"
+
+    monkeypatch.setattr(c.ChatLLM, "stream_chat", fake_stream, raising=False)
+    assert rw._patch_stream_retries() == "ok (4 ekstra forsøg)"
+    assert rw._patch_stream_retries() == "ok (allerede anvendt)"
+    llm = c.ChatLLM.__new__(c.ChatLLM)
+    assert c.ChatLLM.stream_chat(llm, "m1", should_cancel=lambda: False) == "svar"
+    assert len(calls) == 3 and slept == [5.0, 10.0]  # 529 → to forsøg mere, stigende ventetid
+
+    calls.clear(); slept.clear()
+
+    def fail_400(self, messages, *a, **k):
+        calls.append(messages)
+        raise c.ProviderStreamError(provider="anthropic", model="m", original=Boom(400))
+
+    c.ChatLLM._vibetrad_orig_stream_chat = fail_400
+    monkeypatch.setattr(c.ChatLLM, "stream_chat", fail_400, raising=False)
+    assert rw._patch_stream_retries() == "ok (4 ekstra forsøg)"
+    with pytest.raises(c.ProviderStreamError):
+        c.ChatLLM.stream_chat(llm, "m2")
+    assert len(calls) == 1 and slept == []  # 400 er endelig: ingen gentagelse
+
+    calls.clear()
+
+    def fail_always(self, messages, *a, **k):
+        calls.append(messages)
+        raise c.ProviderStreamError(provider="anthropic", model="m", original=Boom(529))
+
+    monkeypatch.setattr(c.ChatLLM, "stream_chat", fail_always, raising=False)
+    rw._patch_stream_retries()
+    with pytest.raises(c.ProviderStreamError):
+        c.ChatLLM.stream_chat(llm, "m3")
+    assert len(calls) == 5 and slept == [5.0, 10.0, 20.0, 40.0]  # 1 + 4 forsøg, så gives fejlen videre
+
+
+@pytest.mark.skipif(importlib.util.find_spec("src") is None, reason="Vibe-Trading er ikke installeret")
+def test_deliverable_contract_accepts_synthesis_without_tool_calls():
+    # 19/10/2026 aften: strateg, redaktør, dommer og attribution-agenten svarede ud fra upstream + facit uden
+    # værktøjskald og blev afvist ("output contract not met: data agent produced no tool calls and no report.md"),
+    # så fire af seks teams faldt. Uden filværktøjer findes report.md ikke.
+    from src.swarm import worker as w
+
+    assert rw._patch_deliverable_contract() == "ok"
+    assert rw._patch_deliverable_contract() == "ok (allerede anvendt)"
+    report = "## Konklusion\n\nVaR 95 % er 4,3 %. | a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |"
+    assert w._classify_deliverable(report, is_data_agent=True, report_written=False, data_tool_calls=0) is None
+    # Vibe-Tradings øvrige kontrol gælder stadig
+    assert w._classify_deliverable("", is_data_agent=True, report_written=False, data_tool_calls=0) == "empty deliverable"
+    assert "fabricated" in w._classify_deliverable("Tal baseret på mock data: 1, 2, 3 " * 5, is_data_agent=True,
+                                                   report_written=False, data_tool_calls=3)
+    # og agenten i _run_worker_impl bruger den udskiftede funktion (modul-global)
+    assert w._run_worker_impl.__globals__["_classify_deliverable"] is w._classify_deliverable
+
+
 def test_patches_degrade_without_vibe_trading(monkeypatch):
     import importlib.util
 
@@ -1129,6 +1210,55 @@ def test_cio_digest_counts_teams_and_names_missing_ones():
     assert "2 team(s) med rapport (Risikoudvalg, Regnskabsdesk); 2 uden rapport (Sentiment, Fondsvalg)" in d
     assert "Agenter uden rapport i teamet: Analytiker 2" in d and "### Fondsvalg: ingen rapport (skipped: budget)" in d
     assert rw.cio_goal_with_inputs("MÅL", runs).startswith("MÅL\n\n## Konklusioner") and rw.cio_digest([]) == ""
+
+
+def test_cio_digest_passes_on_partial_reports_from_a_failed_team():
+    # Vibe-Trading markerer hele teamet "failed", når én agent fejler, og synteseagenten blokeres; de
+    # færdige agenters rapporter må ikke gå tabt for CIO'en.
+    fundamentals = "## Konklusion\nOmsætningen voksede 40 % " * 40
+    runs = [{"preset": "risk_committee", "label": "Risikoudvalg", "status": "completed", "final_report": "## Konklusion\nA " * 50, "tasks": []},
+            {"preset": "earnings_research_desk", "label": "Regnskabsdesk", "status": "failed", "final_report": None, "tasks": [
+                {"role": "Fundamental Analyst", "status": "completed", "summary": fundamentals, "report": "ok"},
+                {"role": "Revision Tracker", "status": "completed", "summary": "## Plan\nExecuting now.", "report": "plan_only"},
+                {"role": "Event Options Analyst", "status": "failed", "summary": "", "report": None,
+                 "error": "LLM call failed at iteration 7: Error code: 400 - prompt is too long for ZZTOP.US"},
+                {"role": "Earnings Strategist", "status": "blocked", "summary": None, "report": None,
+                 "error": "Blocked: upstream not completed (task-options-event=failed)"}]},
+            {"preset": "sentiment_intelligence_team", "label": "Sentiment", "status": "failed", "tasks": [
+                {"role": "A", "status": "failed", "summary": "", "report": None, "error": "x"}]},
+            {"preset": "fund_selection_panel", "label": "Fondsvalg", "status": "skipped", "skip_reason": "budget",
+             "tasks": [{"role": "B", "status": "completed", "summary": "## Konklusion\nskal ikke tælle", "report": "ok"}]}]
+    d = rw.cio_digest(runs)
+    assert ("1 team(s) med rapport (Risikoudvalg); 1 med delrapport fra enkelte agenter (Regnskabsdesk); "
+            "2 uden rapport (Sentiment, Fondsvalg)") in d
+    assert "### Regnskabsdesk: delrapport (failed; ingen samlet rapport, fejlet/blokeret: Event Options Analyst, Earnings Strategist)" in d
+    assert "#### Fundamental Analyst" in d and "Omsætningen voksede 40 %" in d
+    assert "Revision Tracker" not in d.split("### Regnskabsdesk")[1].split("###")[0] or "Executing now" not in d  # planer gives ikke videre
+    assert "ZZTOP" not in d and "skal ikke tælle" not in d
+    assert "### Sentiment: ingen rapport (failed)" in d and "### Fondsvalg: ingen rapport (skipped: budget)" in d
+
+
+def test_error_kind_names_the_type_but_never_the_text():
+    cases = {
+        "Blocked: upstream not completed (task-options-event=failed)": "blokeret af en fejlet agent",
+        "LLM call failed at iteration 7: Error code: 400 - {'message': 'prompt is too long: 213000 tokens for ZZTOP.US'}":
+            "LLM-kald fejlede i iteration 7 (konteksten for lang)",
+        "LLM call failed at iteration 3: Error code: 529 - overloaded_error": "LLM-kald fejlede i iteration 3 (overbelastning/rate limit)",
+        "LLM call failed at iteration 5: Error code: 400 - invalid tool_use for ZZTOP": "LLM-kald fejlede i iteration 5 (HTTP 400)",
+        "LLM call failed at iteration 12: Connection error.": "LLM-kald fejlede i iteration 12",
+        "Failed to render prompt template: Single '}' encountered": "prompt-skabelon kunne ikke udfyldes",
+        "Worker for task x exceeded layer deadline (3600s)": "tidsgrænse",
+        "output contract not met: data agent produced no tool calls and no report.md":
+            "svar uden værktøjskald afvist af Vibe-Trading (leverancekontrakt)",
+        "output contract not met: plan-only stub (no executed analysis / conclusion)": "kun en plan (leverancekontrakt)",
+        "output contract not met: raw tool-result envelope, not analysis": "tomt eller ubrugeligt svar (leverancekontrakt)",
+        "ValueError: no symbol has at least 30 valid bars for ZZTOP.US": "anden fejl",
+        None: "anden fejl",
+    }
+    for err, want in cases.items():
+        got = rw._error_kind(err)
+        assert got == want, (err, got)
+        assert "ZZTOP" not in got
 
 
 def test_dry_run_cio_gets_digest_in_goal(tmp_path):
