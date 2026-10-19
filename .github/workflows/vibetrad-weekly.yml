@@ -69,8 +69,16 @@ jobs:
       VT_MONTHLY_SLOT: ${{ inputs.monthly_slot || '' }}
       VT_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
       VT_DATATJEK: ${{ vars.VT_DATATJEK || 'on' }}
+      # Vibe-Tradings web_search må ikke falde tilbage på kinesiske søgemaskiner.
+      VIBE_TRADING_SEARCH_BING_FALLBACK: "0"
     steps:
+      # ref: main → altid nyeste main, også for en kørsel, der har stået i kø bag en anden (ellers læses
+      # results/ fra et gammelt træ, og ugen køres igen). persist-credentials: false → GitHub-tokenet
+      # ligger ikke i .git/config, mens Vibe-Trading og dens afhængigheder kører.
       - uses: actions/checkout@v5
+        with:
+          ref: main
+          persist-credentials: false
 
       - name: Skal der køres?
         id: gate
@@ -106,19 +114,31 @@ jobs:
 
       - name: Gem krypteret resultat
         if: steps.run.outputs.ran == 'true'
+        env:
+          GH_PUSH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RESULT_FILE: ${{ steps.run.outputs.result_file }}
+          COMMIT_MSG: "Ugerapport ${{ steps.run.outputs.week }} (${{ steps.run.outputs.status }}${{ env.VT_DRY_RUN == 'true' && ', tørkørsel' || '' }})"
         run: |
           git config user.name "vibetrad-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          cp "$RESULT_FILE" "$RUNNER_TEMP/kuvert.enc.json"
           git add results
-          git commit -m "Ugerapport ${{ steps.run.outputs.week }} (${{ steps.run.outputs.status }}${{ env.VT_DRY_RUN == 'true' && ', tørkørsel' || '' }})" || exit 0
-          # Er main ændret under kørslen (fx en kodeændring), afvises push. Så hentes main, og
-          # resultat-commit'et lægges ovenpå (results/ ændres kun af denne workflow). Op til 5 forsøg.
+          git commit -q -m "$COMMIT_MSG" || exit 0
+          # Er main ændret under kørslen (en kodeændring eller en anden kørsels resultat), afvises push.
+          # Så startes forfra fra nyeste main, og kuverten lægges ind igen (index, ledger og latest
+          # flettes af runneren, så to kørslers resultater aldrig overskriver hinanden). Op til 5 forsøg.
           for i in 1 2 3 4 5; do
             git push -q origin HEAD:main && exit 0
-            echo "Push afvist (forsøg $i af 5) – henter nyeste main og prøver igen"
-            git pull -q --rebase origin main || { git rebase --abort; echo "Kunne ikke lægge resultatet oven på main"; exit 1; }
+            echo "Push afvist (forsøg $i af 5) – henter nyeste main og lægger resultatet ind igen"
             sleep $((i * 5))
+            git fetch -q origin main
+            git reset -q --hard origin/main
+            python3 runner/run_week.py --results results --merge-results "$RUNNER_TEMP/kuvert.enc.json" || exit 1
+            git add results
+            git commit -q -m "$COMMIT_MSG" || exit 0
           done
+          echo "Kunne ikke gemme resultatet i repoet. Kuverten ligger som artifact på kørslen."
           exit 1
 
       # Sikkerhedsnet: den krypterede rapport gemmes også på kørslen i 14 dage, så en kørsel til

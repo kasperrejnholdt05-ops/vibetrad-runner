@@ -736,8 +736,8 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
         if not known and not window:
             r.update(status="warn", verified=None)
             r["notes"].append("ingen kommende regnskabsdato i nogen kilde")
-        elif not known:
-            r.update(status="info", verified=window[0], agree=1)
+        elif not known:  # vinduets start kan ligge før i dag: næste regnskab er tidligst i dag
+            r.update(status="info", verified=max(window[0], ref_day), agree=1)
             r["notes"].append(f"kun Vibe-Trading (Yahoo) har et estimat: {dmy(window[0])}–{dmy(window[1])}")
         else:
             counts: dict[str, int] = {}

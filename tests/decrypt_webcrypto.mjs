@@ -4,7 +4,9 @@ import { readFileSync } from "node:fs";
 
 export async function decryptEnvelope(env, passphrase, subtle = globalThis.crypto.subtle) {
   const b = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
-  const sortKeys = (o) => Object.keys(o).sort().reduce((a, k) => ((a[k] = o[k]), a), {});
+  // Rekursivt sorterede nøgler, som runnerens aad_bytes (json.dumps(sort_keys=True)).
+  const sortKeys = (o) => Array.isArray(o) ? o.map(sortKeys)
+    : o && typeof o === "object" ? Object.keys(o).sort().reduce((a, k) => ((a[k] = sortKeys(o[k])), a), {}) : o;
   const base = await subtle.importKey("raw", new TextEncoder().encode(passphrase), "PBKDF2", false, ["deriveKey"]);
   const key = await subtle.deriveKey(
     { name: "PBKDF2", hash: "SHA-256", salt: b(env.salt), iterations: env.iter },

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import importlib.util
 import json
 import os
 import shutil
@@ -260,16 +261,20 @@ def test_shellfree_presets_swap_bash_for_quant_tools(tmp_path):
     src.mkdir()
     (src / "risk_committee.yaml").write_text(yaml.safe_dump({"name": "risk_committee", "agents": [
         {"id": "a", "system_prompt": "Analyse.", "tools": ["bash", "read_file", "get_market_data"]},
-        {"id": "b", "system_prompt": "Samler.", "tools": ["read_file"]}]}))
+        {"id": "b", "system_prompt": "Samler.", "tools": ["read_file", "get_options_chain", "read_url"],
+         "skills": ["hedging-strategy", "volatility"]}]}))
     (src / "plain.yaml").write_text(yaml.safe_dump({"name": "plain", "agents": [{"id": "c", "system_prompt": "x", "tools": ["web_search"]}]}))
     changed = rw.prepare_shellfree_presets(tmp_path / "dst", src)
     assert changed == ["plain", "risk_committee"]  # plain får kun research-discipline på sidste agent
     spec = yaml.safe_load((tmp_path / "dst" / "risk_committee.yaml").read_text())
     a, b = spec["agents"]
     assert "bash" not in a["tools"] and {"quantlib_call", "portfolio_risk_xray"} <= set(a["tools"])
-    assert a["tools"].count("get_market_data") == 1 and "Shell access is DISABLED" in a["system_prompt"]
-    assert "Shell access" not in b["system_prompt"] and "bash" not in b["tools"]
-    assert b["tools"] == ["read_file", "load_skill"] and "research-discipline" in b["skills"]
+    assert a["tools"].count("get_market_data") == 1 and "Shell and file tools are DISABLED" in a["system_prompt"]
+    # filværktøjer, read_url og optionsværktøjer fjernes; options-skillen med
+    assert "bash" not in b["tools"] and not {"read_file", "read_url", "get_options_chain"} & set(b["tools"])
+    assert {"quantlib_call", "portfolio_risk_xray", "load_skill"} <= set(b["tools"]) and "research-discipline" in b["skills"]
+    assert b["skills"][0] == "volatility" and "hedging-strategy" not in b["skills"]
+    assert "Vibetrad risk brief" in b["system_prompt"] and "never options or futures" in b["system_prompt"]
 
 
 def test_month_spent_reads_ledger(tmp_path):
@@ -337,9 +342,44 @@ def test_run_swarm_times_out_and_cancels():
     def sleep(s):
         t[0] += s
 
-    run = rw.run_swarm(rt, rt, "risk_committee", {"goal": "x"}, timeout_s=10, poll_s=1, clock=clock, sleep=sleep)
-    assert rt.cancelled and run.timed_out
-    s = rw.summarize_run(run, "risk_committee", "test", rw.now_sto(), 10, price_in=3, price_out=15)
+    run, stopped = rw.run_swarm(rt, rt, "risk_committee", {"goal": "x"}, timeout_s=10, poll_s=1, clock=clock, sleep=sleep)
+    assert rt.cancelled and stopped == "timeout"
+    summary = rw.summarize_run(run, "risk_committee", "r", sto("2026-10-17T08:00"), 600.0, price_in=2, price_out=10,
+                               stopped=stopped)
+    assert summary["status"] == "timeout"
+    # Budgettet tjekkes undervejs: tokens ud over budgettet afbryder kørslen, og de færdige rapporter bevares
+    rt2, t[0] = Slow(), 0.0
+    run2, stopped2 = rw.run_swarm(rt2, rt2, "risk_committee", {"goal": "x"}, timeout_s=10_000, poll_s=1, clock=clock,
+                                  sleep=sleep, budget_usd=0.0, price_in=2, price_out=10)
+    assert rt2.cancelled is (float(getattr(run2, "total_input_tokens", 0) or 0) > 0) or stopped2 in (None, "budget")
+
+
+@pytest.mark.skipif(importlib.util.find_spec("src") is None, reason="Vibe-Trading er ikke installeret")
+def test_timeout_does_not_write_on_vibe_tradings_run_model():
+    """19/10: run.timed_out = True gav ValueError på pydantic-modellen SwarmRun, og kørslen blev gemt som fejl."""
+    from src.swarm.models import SwarmRun
+
+    class Rt:
+        cancelled = False
+
+        def __init__(self):
+            self.run = SwarmRun(id="r1", preset_name="risk_committee", status="running", user_vars={},
+                                created_at="2026-10-17T08:00:00+00:00")
+
+        def start_run(self, preset, user_vars, include_shell_tools=False):
+            return self.run
+
+        def load_run(self, rid):
+            return self.run
+
+        def cancel_run(self, rid):
+            self.cancelled = True
+
+    rt, t = Rt(), [0.0]
+    run, stopped = rw.run_swarm(rt, rt, "risk_committee", {}, timeout_s=5, poll_s=1, clock=lambda: t[0],
+                                sleep=lambda s: t.__setitem__(0, t[0] + s))
+    assert rt.cancelled and stopped == "timeout" and run is rt.run
+    s = rw.summarize_run(run, "risk_committee", "test", rw.now_sto(), 10, price_in=3, price_out=15, stopped=stopped)
     assert s["status"] == "timeout"
 
 
@@ -373,9 +413,12 @@ def test_fit_payload_shrinks_to_db_limit():
 
 
 @pytest.mark.skipif(not shutil.which("node"), reason="node mangler")
-def test_browser_webcrypto_can_decrypt(tmp_path):
+@pytest.mark.parametrize("cost", [22.61, 8.0, 0.0, 35.0, 0.1 + 0.2])
+def test_browser_webcrypto_can_decrypt(tmp_path, cost):
+    """Også hele dollarbeløb (8.0) og 0.0: før 19/10/2026 gav de "8.0" i Python og "8" i browseren → ulåselig."""
     pub = {"week_id": "2026-W42", "week_label": "Uge 42 · 12/10/2026–16/10/2026", "runs": 2, "dry_run": False,
-           "presets": ["portfolio_review_board"], "status": "ok"}
+           "presets": ["portfolio_review_board"], "status": "ok", "cost_usd": round(cost, 2),
+           "nested": {"b": 1.0, "a": [2.0, 2.5]}}
     env = rw.encrypt({"week": {"id": "2026-W42"}, "tekst": "Æble"}, PASS, pub, iterations=2000)
     f = tmp_path / "env.json"
     f.write_text(json.dumps(env))
@@ -383,6 +426,14 @@ def test_browser_webcrypto_can_decrypt(tmp_path):
                          capture_output=True, text=True, timeout=60)
     assert out.returncode == 0, out.stderr
     assert json.loads(out.stdout) == {"week": {"id": "2026-W42"}, "tekst": "Æble"}
+
+
+def test_aad_matches_javascript_number_formatting():
+    assert rw.aad_bytes({"cost_usd": 8.0, "runs": 5, "x": 1.5}) == b'{"cost_usd":8,"runs":5,"x":1.5}'
+    assert rw.aad_bytes({"b": {"d": 2.0, "c": [1.0, True]}, "a": 0.0}) == b'{"a":0,"b":{"c":[1,true],"d":2}}'
+    for bad in (float("nan"), 1e-05):
+        with pytest.raises(ValueError):
+            rw.aad_bytes({"x": bad})
 
 
 # --- ende-til-ende (tørkørsel som subprocess, så GitHub-loggen kan inspiceres) --
@@ -399,6 +450,22 @@ def run_main(tmp_path, *extra, **env_over):
 
 def outputs(tmp_path):
     return dict(line.split("=", 1) for line in (tmp_path / "out.txt").read_text().split())
+
+
+def test_unexpected_error_shows_where_but_never_the_message(tmp_path, monkeypatch, capfd):
+    # En uventet fejl må kun vise fejltype og sted (offentlig kode) i GitHub-loggen; beskeden kan rumme porteføljedata.
+    def boom():
+        raise KeyError("ZZTOP.ST 2 615 SEK")
+
+    monkeypatch.setattr(rw, "main", boom)
+    monkeypatch.setattr(rw.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out.txt"))
+    assert rw._main_guarded() == 3
+    out = capfd.readouterr().out
+    assert "FEJL: uventet KeyError i runneren ved test_run_week.py:" in out and "boom" in out
+    assert "ZZTOP" not in out and "2 615" not in out
+    assert "ZZTOP.ST 2 615 SEK" in (tmp_path / "vibetrad-vt.log").read_text()  # kun i den private log
+    assert outputs(tmp_path) == {"ran": "false", "status": "error"}
 
 
 def test_end_to_end_dry_run_first_saturday(tmp_path):
@@ -534,7 +601,8 @@ def test_extra_skills_are_added_with_load_skill(tmp_path):
     assert rw.prepare_shellfree_presets(tmp_path / "dst", src) == ["portfolio_review_board"]
     a, cio = yaml.safe_load((tmp_path / "dst" / "portfolio_review_board.yaml").read_text())["agents"]
     assert a["skills"] == ["risk-analysis"] and "load_skill" not in a["tools"]
-    assert cio["skills"][:1] == ["asset-allocation"] and {"thesis-tracker", "investor-lenses", "research-discipline"} <= set(cio["skills"])
+    assert cio["skills"][:1] == ["asset-allocation"] and {"investor-lenses", "research-discipline"} <= set(cio["skills"])
+    assert "thesis-tracker" not in cio["skills"]  # fil-skill uden read_file
     assert cio["skills"].count("research-discipline") == 1 and "load_skill" in cio["tools"]
     assert {"report_audit", "financial_rigor", "get_market_data"} <= set(cio["tools"]) and "Faktatjek: PASS" in cio["system_prompt"]
     assert "report_audit" not in a["tools"]
@@ -548,7 +616,7 @@ def test_spacex_gets_private_company_framework():
     by = {s["preset"]: s for s in plan}
     assert "private-company-research" in by["earnings_research_desk"]["vars"]["target"]
     assert "private-company-research" in by["value_investing_committee"]["vars"]["market"]
-    assert "private-company-research" in rw.EXTRA_SKILLS["portfolio_review_board"]["chief_investment_officer"]
+    assert "private-company-research" in rw.EXTRA_SKILLS["value_investing_committee"]["*last*"]
 
 
 # --- EODHD og datatjek ------------------------------------------------------
@@ -568,7 +636,8 @@ def test_presets_get_eodhd_tool_guidance_and_brief(tmp_path, monkeypatch):
     rates, lead = yaml.safe_load((tmp_path / "dst" / "macro_rates_fx_desk.yaml").read_text())["agents"]
     assert {"get_eodhd_data", "get_macro_series"} <= set(rates["tools"]) and "SE10Y.GBOND" in rates["system_prompt"]
     assert "get_macro_series" in lead["tools"] and "get_eodhd_data" in lead["tools"]  # hele desken
-    assert rates["system_prompt"].rstrip().endswith("| a | b |") and "Vibetrad datatjek" in lead["system_prompt"]
+    assert "| a | b |" in rates["system_prompt"] and "Vibetrad datatjek" in lead["system_prompt"]
+    assert rates["system_prompt"].rstrip().endswith("never derivatives.")  # makro-deskens egen Vibetrad-instruks sidst
     (cio,) = yaml.safe_load((tmp_path / "dst" / "portfolio_review_board.yaml").read_text())["agents"]
     assert {"get_eodhd_data", "etf_holdings", "report_audit"} <= set(cio["tools"]) and "Datakvalitet" in cio["system_prompt"]
     assert len(cio["tools"]) == len(set(cio["tools"]))
@@ -771,7 +840,7 @@ def test_symbol_guidance_for_agents_that_fetch_prices(tmp_path):
     (src / "etf_allocation_desk.yaml").write_text(yaml.safe_dump({"name": "etf_allocation_desk", "agents": [
         {"id": "screener", "system_prompt": "Screen.", "tools": ["bash", "get_market_data"]}]}))
     (src / "custom_desk.yaml").write_text(yaml.safe_dump({"name": "custom_desk", "agents": [
-        {"id": "writer", "system_prompt": "Skriv.", "tools": ["read_file"]}]}))
+        {"id": "writer", "system_prompt": "Skriv.", "tools": []}]}))
     rw.prepare_shellfree_presets(tmp_path / "dst", src)
     (screener,) = yaml.safe_load((tmp_path / "dst" / "etf_allocation_desk.yaml").read_text())["agents"]
     (writer,) = yaml.safe_load((tmp_path / "dst" / "custom_desk.yaml").read_text())["agents"]
@@ -803,6 +872,51 @@ def test_cio_prompt_requires_disagreements_scenarios_and_falsifiers():
                 "buyable at Nordnet"):
         assert txt in cio, txt
     assert "never compare it with" in rw.FRED_GUIDANCE
+
+
+@pytest.mark.parametrize("bad", [{"cash_sek": "87 654 SEK"}, {"cash_sek": [1]}, {"holdings": [{"ticker": "AAA", "max_weight": "10 %"}]},
+                                 {"goal": 5, "watchlist": 7, "next_reports": [1]}, {"monthly_deposit_sek": "x"}])
+def test_bad_portfolio_types_never_reach_the_public_log(tmp_path, bad):
+    """Review 19/10: cash_sek som tekst gav en traceback med beløbet på stderr. Nu: config_error uden værdien."""
+    pf = dict(PORTFOLIO, **bad)
+    p = run_main(tmp_path, "--event", "workflow_dispatch", VT_PORTFOLIO=json.dumps(pf))
+    log = p.stdout + p.stderr
+    if p.returncode == 2:
+        assert "FEJL" in log and "Traceback" not in log
+    else:  # felter, der kan tolkes mildt (goal som tal, watchlist der ikke er en liste), ignoreres
+        assert p.returncode == 0, log
+    for secret in ("87 654", "87654", "10 %", "Traceback"):
+        assert secret not in log
+
+
+def test_portfolio_numbers_accept_text_with_spaces_and_bare_tickers_get_us():
+    p = rw.load_portfolio(json.dumps({"holdings": [{"ticker": "googl", "qty": "3", "cost_sek": "9 315", "max_weight": "12,5"}],
+                                      "cash_sek": "2 615,50", "next_reports": {"GOOGL": "2026-10-28"},
+                                      "next_reports_source": {"googl": "eodhd"}, "watchlist": [{"ticker": "novo-b.co"}, {"x": 1}],
+                                      "goal": 7, "as_of": 20261019}))
+    h = p["holdings"][0]
+    assert h["ticker"] == "GOOGL.US" and h["qty"] == 3 and h["cost_sek"] == 9315 and h["max_weight"] == 12.5
+    assert p["cash_sek"] == 2615.5 and p["next_reports"] == {"GOOGL.US": "2026-10-28"}
+    assert p["next_reports_source"] == {"GOOGL.US": "eodhd"} and p["watchlist"] == [{"ticker": "NOVO-B.CO"}]
+    assert p["goal"] == "7" and p["as_of"] == "20261019"
+    reps = rw.upcoming_reports(p, sto("2026-10-20T08:00"), lookup=None, verified={"GOOGL.US": "2026-10-29"})
+    assert reps[0]["date"] == "2026-10-29" and reps[0]["source"] == "datatjek"
+
+
+def test_env_numbers_with_comma_and_garbage(tmp_path):
+    p = run_main(tmp_path, "--event", "workflow_dispatch", VT_RUN_BUDGET_USD="35,5")
+    assert p.returncode == 0 and "Budget: 35.50 USD" in p.stdout
+    p = run_main(tmp_path / "b", "--event", "workflow_dispatch", VT_RUN_BUDGET_USD="mange")
+    assert p.returncode == 2 and "VT_RUN_BUDGET_USD skal være et tal" in p.stdout and "Traceback" not in p.stdout + p.stderr
+
+
+@pytest.mark.parametrize("text,want", [
+    ("## Vurdering\n" + "Tal og konklusioner. " * 150 + "\n\nLet me know if you want the 2022 window as well.", "ok"),
+    ("**Scenarier jeg vil køre**\n- SPCX -30 %\n- USD/SEK -10 %\nLet me get the prices now.", "plan_only"),
+    ("Kort svar uden overskrift. Let me know.", "ok"),
+], ids=["let-me-know-tail", "scenario-plan", "short-let-me-know"])
+def test_classifier_review_cases(text, want):
+    assert rw.classify_report(text) == want
 
 
 def test_cash_note_keeps_its_decimal_commas():
@@ -988,3 +1102,52 @@ def test_free_cash_in_portfolio_text_scope_and_brief():
                              "sources": {"vibe_trading": {"available": False}, "eodhd": {"available": False}},
                              "portfolio": {"cash_sek": 2615, "cash_reserved_sek": 1640, "total_sek": 3615}})
     assert "Kontant 2 615 SEK (heraf 1 640 SEK reserveret, 975 SEK ledig)" in brief
+
+
+# --- Instrukser pr. trin og CIO-digest (19/10/2026) -------------------------------------------------------
+
+def test_step_preset_fills_placeholders_and_gives_cio_the_digest(tmp_path):
+    import yaml
+    (tmp_path / "portfolio_review_board.yaml").write_text(yaml.safe_dump({"name": "portfolio_review_board", "agents": [
+        {"id": "attribution_analyst", "system_prompt": "Portefølje: {portfolio}. Periode {review_period}. {upstream_context} {\"json\": 1}", "tools": []},
+        {"id": "chief_investment_officer", "system_prompt": "CIO {goal}", "tools": []}]}))
+    assert rw.prepare_step_preset(tmp_path, "portfolio_review_board", {"portfolio": "AAA 3 stk", "goal": "Mål", "n": 5},
+                                  {"chief_investment_officer": "## Konklusioner\nDIGEST"})
+    a, cio = yaml.safe_load((tmp_path / "portfolio_review_board.yaml").read_text())["agents"]
+    assert a["system_prompt"] == "Portefølje: AAA 3 stk. Periode {review_period}. {upstream_context} {\"json\": 1}"
+    assert cio["system_prompt"] == "CIO Mål\n\n## Konklusioner\nDIGEST\n" and "DIGEST" not in a["system_prompt"]
+    assert rw.prepare_step_preset(tmp_path, "findes_ikke", {}) is False
+
+
+def test_cio_digest_counts_teams_and_names_missing_ones():
+    runs = [{"preset": "risk_committee", "label": "Risikoudvalg", "status": "completed", "final_report": "## Konklusion\nA " * 50, "tasks": []},
+            {"preset": "earnings_research_desk", "label": "Regnskabsdesk", "status": "completed", "final_report": "## Konklusion\nB " * 50,
+             "tasks": [{"role": "Analytiker 2", "report": "plan_only"}]},
+            {"preset": "sentiment_intelligence_team", "label": "Sentiment", "status": "timeout", "tasks": []},
+            {"preset": "fund_selection_panel", "label": "Fondsvalg", "status": "skipped", "skip_reason": "budget", "tasks": []}]
+    d = rw.cio_digest(runs)
+    assert "2 team(s) med rapport (Risikoudvalg, Regnskabsdesk); 2 uden rapport (Sentiment, Fondsvalg)" in d
+    assert "Agenter uden rapport i teamet: Analytiker 2" in d and "### Fondsvalg: ingen rapport (skipped: budget)" in d
+    assert rw.cio_goal_with_inputs("MÅL", runs).startswith("MÅL\n\n## Konklusioner") and rw.cio_digest([]) == ""
+
+
+def test_dry_run_cio_gets_digest_in_goal(tmp_path):
+    p = run_main(tmp_path, "--event", "workflow_dispatch", "--now", "2026-10-17T09:00")
+    assert p.returncode == 0, p.stderr
+    data = rw.decrypt(json.loads((tmp_path / "results" / "latest.enc.json").read_text()), PASS)
+    cio = next(r for r in data["runs"] if r["preset"] == "portfolio_review_board")
+    assert cio["status"] == "completed"
+
+
+@pytest.mark.skipif(importlib.util.find_spec("src") is None, reason="Vibe-Trading er ikke installeret")
+def test_vibe_trading_prompt_and_grounding_patches(monkeypatch):
+    monkeypatch.setenv("LANGCHAIN_MODEL_NAME", "claude-sonnet-5")
+    st = rw.patch_vibe_trading()
+    assert st["prompt"].startswith("ok") and st["grounding"].startswith("ok")
+    from src.swarm import grounding as g, worker as w
+    from src.swarm.models import SwarmAgentSpec
+
+    text = w.build_worker_prompt(SwarmAgentSpec(id="a", role="x", system_prompt="Hej", tools=["get_market_data"]), {}, "", "")
+    assert "HARD LIMIT" not in text and "state your plan" not in text and "never finish with a plan" in text
+    # kun symboler, der står ordret i teksten: ingen SEK.US, ISK.US, NOVO.US, PASS.US
+    assert g.extract_symbols_from_user_vars({"g": "ISK i SEK: NOVO-B.CO, ACWI.US, GOOGL.US. Datatjek PASS."}) == ["ACWI.US", "GOOGL.US"]

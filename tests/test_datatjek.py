@@ -570,3 +570,11 @@ def test_yahoo_one_day_off_counts_as_a_second_source():
     g = next(e for e in dtj.run(p, WEEK, REF, vt=vt, eod=eod)["earnings"] if e["ticker"] == "GOOGL.US")
     assert g["verified"] == "2026-10-28" and g["agree"] == 2 and g["status"] == "ok" and g["alternatives"] == []
     assert not any("kender datoen" in n for n in g["notes"])
+
+
+def test_yahoo_window_that_straddles_today_never_yields_a_past_date():
+    vt, eod = sources(earn={}, vt_prof={"SPCX.US": {"earnings_dates": ["2026-10-13", "2026-10-17"], "earnings_estimate": True}})
+    p = rw.load_portfolio(json.dumps(dict(json.loads(RAW_P), next_reports={})))
+    s = next(e for e in dtj.run(p, WEEK, REF, vt=vt, eod=eod)["earnings"] if e["ticker"] == "SPCX.US")
+    assert s["verified"] == "2026-10-15" and s["status"] == "info"  # REF er 15/10
+    assert [r["ticker"] for r in rw.upcoming_reports(p, REF, lookup=None, verified=dtj.verified_reports({"earnings": [s]}))] == ["SPCX.US"]

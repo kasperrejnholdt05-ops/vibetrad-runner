@@ -239,7 +239,8 @@ def agent_brief(snap: dict | None) -> str:
     rows = [r for r in snap["series"] if r.get("value") is not None]
     lines = [f"## Makro (FRED, St. Louis Fed) pr. {_dmy(snap.get('ref_date'))}",
              "Officielle amerikanske makrotal hentet før agenterne startede. Brug dem som facit for renter, "
-             "volatilitet, kreditspænd og USD/SEK; hent længere historik med get_macro_series, hvis du har værktøjet.",
+             "volatilitet og kreditspænd; USD/SEK til omregning står i datatjekkets facit (DEXSDUS er kun makrokontekst). "
+             "Hent længere historik med get_macro_series, hvis du har værktøjet.",
              "", "| Serie | Seneste | Dato | Ændring ca. 1 md |", "|---|---|---|---|"]
     for r in rows:
         stale = " (forældet)" if r.get("stale") else ""

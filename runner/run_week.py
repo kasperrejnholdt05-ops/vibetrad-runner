@@ -68,17 +68,16 @@ PRESET_LABELS = {
 
 # Ekstra Vibe-Trading-skills, der lægges på bestemte agenter (agent-id → skills).
 # "*last*" er det sidste (syntetiserende) agent-trin i hvert preset.
+# Få, relevante skills: hvert load_skill koster et kald og 10-20 000 tegn kontekst. thesis-tracker, risk-analysis og
+# correlation-regime er Python-/filopskrifter, agenterne ikke kan følge uden shell, og udelades (19/10/2026).
 EXTRA_SKILLS = {
     "*": {"*last*": ["research-discipline"]},
-    "portfolio_review_board": {"chief_investment_officer": ["thesis-tracker", "investor-lenses", "research-discipline",
-                                                            "private-company-research"]},
-    "risk_committee": {"drawdown_analyst": ["risk-analysis"], "tail_risk_analyst": ["risk-analysis", "hedging-strategy"],
-                       "regime_detector": ["correlation-regime"], "aggregator": ["risk-analysis", "hedging-strategy"]},
-    "investment_committee": {"*last*": ["thesis-tracker", "research-discipline"]},
-    "value_investing_committee": {"*last*": ["thesis-tracker", "management-deep-dive", "private-company-research"]},
+    "portfolio_review_board": {"chief_investment_officer": ["investor-lenses", "research-discipline"]},
+    "investment_committee": {"*last*": ["research-discipline"]},
+    "value_investing_committee": {"*last*": ["management-deep-dive", "private-company-research"]},
     # SpaceX er nyligt børsnoteret: rammen for pre-IPO/private selskaber (6 analytiker-vinkler) hjælper, hvor historikken er kort.
     "earnings_research_desk": {"*last*": ["private-company-research"]},
-    "fundamental_research_team": {"*last*": ["private-company-research", "thesis-tracker"]},
+    "fundamental_research_team": {"*last*": ["private-company-research"]},
 }
 SPACEX_HINT = (" Selskabet er nyligt børsnoteret med kort kurs- og regnskabshistorik: brug skill'en "
                "private-company-research (load_skill) som supplerende ramme.")
@@ -133,7 +132,11 @@ not NOVO.US). Currency pairs are FX symbols (USDSEK=X, DKKSEK=X), never DKK.US o
 If a tool call fails or returns no data, say so in the report and never present a number from that call.
 portfolio_risk_xray needs at least 30 daily bars per symbol ("no symbol has at least 30 valid bars" otherwise): leave
 start_date empty (one year) or set it at least 3 months back. Never use the short ground-truth price window as the
-start date. A recently listed stock (short history in the facit) works from its listing date.
+start date. It aligns all symbols on their common history, so with a recently listed stock (short history in the
+facit) the whole window shrinks to that listing period: run it once with and once without that stock and report the
+window (first and last date) of each.
+`etf_holdings` is the exception to the suffix rule: it takes the bare US ticker (ACWI, not ACWI.US) and covers US- and
+China-listed funds only; use the US sibling as a look-through proxy for a UCITS ETF and say so.
 Never state a brokerage fee (courtage) or FX fee unless it is given in your instructions.
 Market capitalisation: use the whole-company figure from the Vibetrad facit. Never compute it from one share class's
 share count (Alphabet has A, B and C shares, so GOOGL alone is far too low).
@@ -150,22 +153,102 @@ The investor is a retail client who invests only through a Swedish ISK account a
 - No options, futures, short selling or leverage: do not propose option strategies or derivative hedges. Single US,
   Nordic and European stocks are fine.
 - Cash that the portfolio text marks as reserved (e.g. for an open order) is not available for new purchases.
+- Currency risk is handled only through weights, diversification or currency-hedged UCITS share classes, never with
+  derivatives.
+- UCITS ETFs can be fetched through `get_eodhd_data` with their European listing, e.g. IUSQ.DE or SPYY.DE (MSCI ACWI),
+  IWDA.AS or EUNL.DE (MSCI World), VWCE.DE (FTSE All-World), SXR8.DE (S&P 500), EXSA.DE (STOXX Europe 600), XDEV.DE
+  (World Value), IUSN.DE (World Small Cap). Check a candidate with get_eodhd_data (fundamentals or eod) before naming
+  it, and quantify diversification with `portfolio_risk_xray` on the holdings plus the candidate.
+- Write the whole report in Danish even though the task template is English. Dates DD/MM/YYYY, amounts in SEK (local
+  currency in brackets when useful). Institutional sections that do not exist for this investor (Northbound flows,
+  margin balances, dragon-tiger boards, CNY/HKD, broker blotters, 13F data) are replaced by one line saying so.
 """
 # Agenter med disse værktøjer henter kurser og får symbol-instruksen.
 SYMBOL_TOOLS = {"get_market_data", "portfolio_risk_xray", "backtest", "technical_indicators", "quantlib_call", "etf_holdings",
                 "get_eodhd_data"}
-EXTRA_PROMPT = {"portfolio_review_board": {"chief_investment_officer": """
+# Instrukser pr. preset → agent-id ("*" = alle agenter i presettet). Rettet efter kørslen 19/10/2026, hvor
+# optionsstrategier, Northbound-flow, mæglerblotters og en fuld Brinson-attribution blev efterspurgt af præsets
+# skrevet til institutionelle/kinesiske forhold.
+EXTRA_PROMPT = {
+    "risk_committee": {"*": """
+
+## Vibetrad risk brief
+The audit target is the investor's whole portfolio (facit table). Historical VaR/ES 95/99 % come from
+`portfolio_risk_xray` (label them statistically weak when the window is short). Always compute the four loss scenarios
+in SEK with `financial_rigor` on the facit values: 1) largest position -30 %, 2) largest position -50 %, 3) USD/SEK
+-10 %, 4) US tech -25 %. For a stock listed under a year, replace historical crisis windows with ACWI.US or a long-listed
+holding as proxy and say so. Protection ideas are weights, UCITS funds and the monthly deposit - never options or futures.
+"""},
+    "earnings_research_desk": {
+        "event_options_analyst": """
+
+## Vibetrad
+Report the implied move (%) and implied vs realised volatility as information only, translated into SEK on the investor's
+position. Propose no option trades: the account cannot hold options. If the option chain is unavailable, say so in one
+line and use the realised earnings-day moves instead.
+""",
+        "earnings_strategist": """
+
+## Vibetrad
+The recommendation is one of: hold through the report, trim before, add after - sized in SEK and in months of the monthly
+deposit, with the investor's weight target in mind. No option structures.
+"""},
+    "sentiment_intelligence_team": {"flow_analyst": """
+
+## Vibetrad
+Northbound/Stock Connect, margin balances and dragon-tiger boards do not exist for US and Nordic stocks: say so in one
+line. Use `get_eodhd_data` (news sentiment) and `technical_indicators` (20-bar volume ratio, price/volume divergence)
+instead, at most 5 tool calls.
+"""},
+    "macro_rates_fx_desk": {"*": """
+
+## Vibetrad
+The investor's base currency is SEK with mostly USD assets: replace China/CNY/HKD sections with the Riksbank, the Fed,
+USD/SEK and EUR/SEK. FX exposure can only be changed through weights, diversification or currency-hedged UCITS share
+classes, never derivatives.
+"""},
+    "fund_selection_panel": {"*": """
+
+## Vibetrad
+Ignore CNY AUM thresholds and Wind/Tushare data: candidates are UCITS ETFs and index funds buyable at Nordnet (see
+"Investor constraints"), checked with `get_eodhd_data` and `portfolio_risk_xray`. No backtest is required; a
+comparison of volatility, drawdown and correlation to the existing holdings is the deliverable.
+"""},
+    "etf_allocation_desk": {"*": """
+
+## Vibetrad
+Every ETF you recommend must be a UCITS ETF buyable at Nordnet (European listing, see "Investor constraints"). US-listed
+tickers may be used as look-through proxies in `etf_holdings` (bare ticker) only.
+"""},
+    "portfolio_review_board": {
+        "attribution_analyst": """
+
+## Vibetrad
+Skip Brinson sector attribution and factor models: no benchmark sector series exist here. Compute each holding's weekly
+contribution in SEK and in percentage points from the facit table (weekly returns and weights) plus the FX contribution,
+compared with ACWI.US. At most 3 tool calls. Deliver the numbers, never a plan.
+""",
+        "execution_analyst": """
+
+## Vibetrad
+No broker blotter exists: write "ikke vurderbart" for realised VWAP/slippage in five lines at most. Then check any open
+order in the portfolio text (limit price vs the facit price, distance in %, earnings date before a likely fill) and
+give practical execution rules for a retail account (limit orders, avoid earnings days). At most 2 tool calls.
+""",
+        "chief_investment_officer": """
 
 ## Faktatjek før aflevering (Vibetrad)
-Before you finish, audit your own report: run `report_audit` with command='extract' on your draft, verify every sampled
-figure with `get_market_data` (prices) or `financial_rigor` (arithmetic), then run command='verdict'. End the report with a
-line "Faktatjek: PASS" or "Faktatjek: FAIL – <what was wrong and how you corrected it>". Never present an inference
-(e.g. whether an order 'should have filled') as a fact; label it as an inference and say what would confirm it.
-Compare your prices, weights and dates with the "Vibetrad datatjek" table in your instructions (cross-checked between
-Vibe-Trading and EODHD) and add a short section "Datakvalitet" saying which data gaps or disagreements matter.
+Before you finish, audit your own report: run `report_audit` with command='extract' on your draft, verify at most five
+sampled prices/weights against the facit table (no tool call needed) or with `financial_rigor` (arithmetic), then run
+command='verdict'. End the report with a line "Faktatjek: PASS" or "Faktatjek: FAIL – <what was wrong and how you
+corrected it>". Never present an inference (e.g. whether an order 'should have filled') as a fact; label it as an
+inference and say what would confirm it. Compare your prices, weights and dates with the "Vibetrad datatjek" table in
+your instructions (cross-checked between Vibe-Trading and EODHD) and add a short section "Datakvalitet" saying which
+data gaps or disagreements matter.
 
 ## Syntese af ugens teams (Vibetrad)
-Your goal lists the other teams' conclusions. Use all of them:
+The section "Konklusioner fra ugens øvrige Vibe-Trading-teams" in your instructions (or in your goal) lists the other
+teams' conclusions. Use all of them:
 - Add a table "Uenigheder mellem teams" (team | deres anbefaling | din beslutning | hvorfor) for every point where a team
   recommends something different from you (selling vs holding, timing, target weights, an order). Write "Ingen" only if
   no team disagrees. Never write that all teams agree without checking each team's recommendation.
@@ -184,17 +267,36 @@ Your goal lists the other teams' conclusions. Use all of them:
 
 # Rækkefølge i rapporten og som input til CIO'en (CIO kører altid sidst).
 CORE = ("risk_committee", "portfolio_review_board")
-SHELL_TOOLS = {"bash", "background_run", "cancel_background"}
+# Shell og filer fjernes: uden write_file/read_file/edit_file viser Vibe-Trading sine instrukser for "agent uden
+# kode" (ingen "write ONE Python script", intet report.md), og read_url fjernes, fordi en agent med hele
+# porteføljen i sin instruks ellers kunne sendes til en vilkårlig adresse af en plantet tekst i en nyhed
+# (dataudsivning). Nyheder og kurser hentes stadig via get_eodhd_data/get_stock_news, som kun kalder faste værter.
+SHELL_TOOLS = {"bash", "background_run", "cancel_background", "write_file", "read_file", "edit_file", "read_url"}
+# Værktøjer, der ikke giver mening for en ISK hos Nordnet (optioner, kinesisk margin/flow, handelsjournal uden fil).
+DROP_TOOLS = {"get_options_chain", "options_pricing", "options_payoff", "get_fund_flow", "get_margin_trading",
+              "get_research_reports", "analyze_trade_journal"}
+# Skills, der handler om kinesiske/krypto-datakilder, options eller Python-opskrifter, agenterne ikke kan køre.
+DROP_SKILLS = {"tushare", "yfinance", "okx-market", "options-strategy", "options-advanced", "hedging-strategy",
+               "social-media-intelligence", "strategy-generate", "minute-analysis"}
 QUANT_TOOLS = ["quantlib_call", "portfolio_risk_xray", "financial_rigor", "technical_indicators", "get_market_data"]
 NO_SHELL_GUIDANCE = """
 
 ## Execution environment (Vibetrad)
-Shell access is DISABLED here: never try to write or run Python or bash scripts, and never answer with a plan to compute something later.
-Do every calculation with the built-in tools:
-- `portfolio_risk_xray` - portfolio volatility, max drawdown, historical VaR / expected shortfall, correlation, beta, concentration (pass symbols and weights).
-- `quantlib_call` - tested finance maths: VaR/CVaR/EVT and VaR backtests, GARCH, regime switching, stationarity, Brinson attribution, event studies, DCF/comps valuation. Start with action='list', then 'describe', then call.
-- `technical_indicators`, `financial_rigor` (exact arithmetic, bull/base/bear targets) and `get_market_data` for prices.
-Report the numbers you computed, the inputs and the data window. If a figure truly cannot be computed, say exactly why and continue with what you have.
+Shell and file tools are DISABLED here: never try to write or run Python or bash scripts, never write report.md, and
+never answer with a plan to compute something later. Do every calculation with the built-in tools:
+- `portfolio_risk_xray` - portfolio volatility, max drawdown, historical VaR / expected shortfall, correlation, beta,
+  concentration (pass symbols and weights; it fetches the prices itself).
+- `technical_indicators` (fetches prices itself), `financial_rigor` (exact arithmetic, bull/base/bear targets) and
+  `get_market_data` / `get_eodhd_data` for prices and fundamentals.
+- `quantlib_call` fetches nothing and needs typed inputs: use it only for small inputs (parametric VaR from the x-ray's
+  volatility, Monte Carlo, DCF/comps, Brinson with a few rows). Never retype a daily return series into it, and do not
+  spend calls on action='list'/'describe' unless you really need a function you have not used before.
+Budget: the "HARD LIMIT of 20 tool calls" is not enforced, but context is: each tool result is cut at 10 000 characters
+and only the most recent results stay fully in context. Plan 8-15 calls, fetch one symbol per call with the shortest
+window that answers the question, and note the numbers you need as soon as they arrive. A report with fewer numbers
+beats no report: never end with a plan or a promise.
+Report the numbers you computed, the inputs and the data window. If a figure truly cannot be computed, say exactly why
+and continue with what you have.
 """
 
 DEFAULT_GOAL = (
@@ -341,27 +443,58 @@ def load_portfolio(raw: str | None) -> dict:
         raise PortfolioError(f"VT_PORTFOLIO er ikke gyldig JSON (linje {exc.lineno}, kolonne {exc.colno})") from None
     if not isinstance(p, dict) or not isinstance(p.get("holdings"), list) or not p["holdings"]:
         raise PortfolioError("VT_PORTFOLIO skal have en ikke-tom liste 'holdings'")
+    try:
+        return _clean_portfolio(p)
+    except PortfolioError:
+        raise
+    except (TypeError, ValueError, AttributeError, KeyError) as exc:  # aldrig selve værdien i beskeden
+        raise PortfolioError(f"VT_PORTFOLIO har et felt med forkert type ({type(exc).__name__}); ret det i Vibetrad "
+                             "og kopiér VT_PORTFOLIO igen") from None
+
+
+def _num(value: Any, field: str, *, default: float | None = None, allow_none: bool = False) -> float | None:
+    """Tal fra VT_PORTFOLIO. Tekst med mellemrum/komma accepteres ("2 615", "10,5"); alt andet er en fejl uden værdi."""
+    if value is None or isinstance(value, bool):
+        if allow_none or value is None:
+            return default
+        raise PortfolioError(f"{field} skal være et tal")
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and re.fullmatch(r"\s*-?\d[\d \u00a0]*(?:[.,]\d+)?\s*", value):
+        return float(re.sub(r"[ \u00a0]", "", value).replace(",", "."))
+    raise PortfolioError(f"{field} skal være et tal")
+
+
+def _clean_portfolio(p: dict) -> dict:
     clean = []
     for i, h in enumerate(p["holdings"]):
-        if not isinstance(h, dict) or not str(h.get("ticker", "")).strip():
+        if not isinstance(h, dict) or not str(h.get("ticker") or "").strip():
             raise PortfolioError(f"holdings[{i}] mangler 'ticker'")
-        qty = h.get("qty")
-        if qty is not None and not isinstance(qty, (int, float)):
-            raise PortfolioError(f"holdings[{i}].qty skal være et tal")
+        qty = _num(h.get("qty"), f"holdings[{i}].qty", allow_none=True)
+        ticker = dtj.norm_ticker(h["ticker"])  # bare amerikanske tickers får .US, så datatjek og plan taler om det samme
         clean.append({
-            "ticker": str(h["ticker"]).strip().upper(),
-            "name": str(h.get("name") or h["ticker"]).strip(),
+            "ticker": ticker,
+            "name": str(h.get("name") or h["ticker"]).strip()[:120],
             "qty": qty,
-            "cost_sek": float(h["cost_sek"]) if isinstance(h.get("cost_sek"), (int, float)) else None,
-            "max_weight": float(h.get("max_weight") or 10),
-            "kind": str(h.get("kind") or "stock"),
+            "cost_sek": _num(h.get("cost_sek"), f"holdings[{i}].cost_sek", allow_none=True),
+            "max_weight": _num(h.get("max_weight"), f"holdings[{i}].max_weight", default=10.0, allow_none=True) or 10.0,
+            "kind": str(h.get("kind") or "stock").strip().lower()[:20],
         })
     p["holdings"] = clean
     policy = str(p.get("weight_policy") or "limit").strip().lower()
     p["weight_policy"] = policy if policy in WEIGHT_POLICIES else "limit"
-    p.setdefault("account", "ISK Nordnet")
-    p.setdefault("currency", "SEK")
-    p["cash_sek"] = float(p.get("cash_sek") or 0)
+    p["account"] = str(p.get("account") or "ISK Nordnet").strip()[:60]
+    p["currency"] = str(p.get("currency") or "SEK").strip().upper()[:3] or "SEK"
+    for key in ("goal", "framework", "cash_note", "as_of"):
+        if p.get(key) is not None and not isinstance(p[key], str):
+            p[key] = str(p[key])
+    wl = p.get("watchlist")
+    p["watchlist"] = [dict(w, ticker=dtj.norm_ticker(w.get("ticker"))) for w in wl
+                      if isinstance(w, dict) and str(w.get("ticker") or "").strip()] if isinstance(wl, list) else []
+    nr = p.get("next_reports")
+    p["next_reports"] = ({dtj.norm_ticker(k): str(v) for k, v in nr.items() if str(k or "").strip() and v}
+                         if isinstance(nr, dict) else {})
+    p["cash_sek"] = _num(p.get("cash_sek"), "cash_sek", default=0.0, allow_none=True) or 0.0
     reserved = p.get("cash_reserved_sek")
     if isinstance(reserved, str) and re.fullmatch(r"\s*\d+(?:[.,]\d+)?\s*", reserved):
         reserved = float(reserved.replace(",", "."))
@@ -372,12 +505,10 @@ def load_portfolio(raw: str | None) -> dict:
     p["monthly_deposit_sek"] = float(dep) if isinstance(dep, (int, float)) and not isinstance(dep, bool) and 0 < dep < 10_000_000 else None
     cc = re.sub(r"[^\w .,/()+-]", "", str(p.get("courtage_class") or "")).strip()[:40]
     p["courtage_class"] = cc or None
-    p.setdefault("watchlist", [])
-    p.setdefault("next_reports", {})
     # Hvor hver regnskabsdato i next_reports kommer fra (Vibetrad fra 19/10/2026): "eodhd" = hentet fra EODHD,
     # "manuel" = skrevet ind af Kasper, "brief" = Vibetrads kalender. En kopi af EODHD er ikke en egen kilde.
     src = p.get("next_reports_source")
-    p["next_reports_source"] = ({str(k).strip().upper(): str(v).strip().lower() for k, v in src.items()
+    p["next_reports_source"] = ({dtj.norm_ticker(k): str(v).strip().lower() for k, v in src.items()
                                  if str(v).strip().lower() in NEXT_REPORT_SOURCES} if isinstance(src, dict) else {})
     return p
 
@@ -743,16 +874,23 @@ def report_digest(text: str | None, budget: int) -> str:
 
 
 def cio_goal_with_inputs(base_goal: str, runs: list[dict], limit: int = 16000) -> str:
-    """Giv CIO'en alle øvrige teams' konklusioner, så syntesen bygger på hele ugens arbejde.
+    """Giv CIO'en alle øvrige teams' konklusioner, så syntesen bygger på hele ugens arbejde."""
+    return base_goal + cio_digest(runs, limit)
 
-    Hvert team får lige stor plads, og pladsen bruges på konklusioner og beslutninger (ikke indledningen).
-    Teams uden rapport nævnes, så CIO'en ikke tror, at de er enige.
-    """
+
+def cio_digest(runs: list[dict], limit: int = 16000) -> str:
+    """Digest af de øvrige teams til CIO'en: hvert team får lige stor plads, og pladsen bruges på konklusioner
+    og beslutninger (ikke indledningen). Teams uden rapport nævnes, så CIO'en ikke tror, at de er enige.
+    Overskriften tæller teams, så CIO'en ikke tæller forkert (19/10/2026 skrev den "alle fire teams" om seks)."""
     done = [r for r in runs if r.get("status") == "completed" and r.get("final_report")]
     missing = [r for r in runs if r not in done]
     if not done and not missing:
-        return base_goal
-    intro = "\n\nKonklusioner fra ugens øvrige Vibe-Trading-teams (brug dem alle i syntesen, og sig hvor du er uenig):\n"
+        return ""
+    names = ", ".join(r.get("label", r["preset"]) for r in done) or "ingen"
+    miss_names = ", ".join(r.get("label", r["preset"]) for r in missing) or "ingen"
+    intro = (f"\n\n## Konklusioner fra ugens øvrige Vibe-Trading-teams\n{len(done)} team(s) med rapport ({names}); "
+             f"{len(missing)} uden rapport ({miss_names}). Brug disse tal, når du tæller teams. Brug alle konklusioner "
+             "i syntesen, og sig hvor du er uenig.\n")
     notes = [f"### {r.get('label', r['preset'])}: ingen rapport ({r.get('status')}"
              + (f": {r['skip_reason']}" if r.get("skip_reason") else "") + ")" for r in missing]
     room = limit - len(intro) - sum(len(n) + 2 for n in notes)
@@ -763,7 +901,7 @@ def cio_goal_with_inputs(base_goal: str, runs: list[dict], limit: int = 16000) -
         no_rep = [t.get("role") for t in r.get("tasks", []) if t.get("report") in ("empty", "plan_only")]
         flag = f"(Agenter uden rapport i teamet: {', '.join(no_rep)})\n" if no_rep else ""
         parts.append(head + flag + report_digest(r["final_report"], share - len(head) - len(flag)))
-    return base_goal + intro + "\n\n".join(parts + notes)
+    return intro + "\n\n".join(parts + notes)
 
 
 # Værktøjer, der kun kan bruges med en nøgle. Uden nøglen tilføjes de ikke (så agenterne ikke lover data, de ikke kan hente).
@@ -814,6 +952,12 @@ def prepare_shellfree_presets(dst: Path, src: Path | None = None, brief: str = "
                 agent["tools"] = kept + [t for t in QUANT_TOOLS if t not in kept]
                 agent["system_prompt"] = str(agent.get("system_prompt", "")).rstrip() + NO_SHELL_GUIDANCE
                 touched = True
+            if DROP_TOOLS & set(agent.get("tools") or []):
+                agent["tools"] = [t for t in agent["tools"] if t not in DROP_TOOLS]
+                touched = True
+            if DROP_SKILLS & set(agent.get("skills") or []):
+                agent["skills"] = [s for s in agent["skills"] if s not in DROP_SKILLS]
+                touched = True
             add_tools = _extra_tools_for(f.stem, agent)
             if eodhd_ready is False:  # EODHD blev ikke koblet på: lov ikke agenterne et værktøj, de ikke har
                 add_tools = [t for t in add_tools if t != "get_eodhd_data"]
@@ -836,7 +980,8 @@ def prepare_shellfree_presets(dst: Path, src: Path | None = None, brief: str = "
             if brief:
                 agent["system_prompt"] = str(agent.get("system_prompt", "")).rstrip() + "\n\n" + brief.strip() + "\n"
                 touched = True
-            add_prompt = EXTRA_PROMPT.get(f.stem, {}).get(agent.get("id"))
+            rules_p = EXTRA_PROMPT.get(f.stem, {})
+            add_prompt = rules_p.get("*", "") + rules_p.get(agent.get("id"), "")
             if add_prompt:
                 agent["system_prompt"] = str(agent.get("system_prompt", "")).rstrip() + add_prompt
                 touched = True
@@ -854,6 +999,37 @@ def prepare_shellfree_presets(dst: Path, src: Path | None = None, brief: str = "
             (dst / f.name).write_text(yaml.safe_dump(spec, allow_unicode=True, sort_keys=False), "utf-8")
             changed.append(f.stem)
     return changed
+
+
+_PLACEHOLDER = re.compile(r"\{([a-z_]+)\}")
+
+
+def prepare_step_preset(dst: Path, preset: str, user_vars: dict, system_extra: dict[str, str] | None = None) -> bool:
+    """Tilpas det klargjorte preset til ét trin, lige før det køres.
+
+    Vibe-Trading erstatter kun {upstream_context} i system-prompten, så {portfolio}, {goal}, {target} m.fl. stod
+    som rå pladsholdere i hver agents instruks (set 19/10/2026). Her indsættes trinnets variabler, og tekst til én
+    bestemt agent (fx CIO'ens digest af de andre teams) lægges i dens egen instruks i stedet for i {goal}, som alle
+    agenter i presettet får. Returnerer True, når filen blev skrevet.
+    """
+    import yaml
+
+    f = dst / f"{preset}.yaml"
+    if not f.exists():
+        return False
+    spec = yaml.safe_load(f.read_text("utf-8"))
+    values = {k: str(v) for k, v in (user_vars or {}).items() if isinstance(v, (str, int, float))}
+
+    def fill(text: str) -> str:
+        return _PLACEHOLDER.sub(lambda m: values.get(m.group(1), m.group(0)) if m.group(1) != "upstream_context" else m.group(0), text)
+
+    for agent in spec.get("agents", []):
+        agent["system_prompt"] = fill(str(agent.get("system_prompt", "")))
+        extra = (system_extra or {}).get(agent.get("id"))
+        if extra:
+            agent["system_prompt"] = agent["system_prompt"].rstrip() + "\n\n" + extra.strip() + "\n"
+    f.write_text(yaml.safe_dump(spec, allow_unicode=True, sort_keys=False), "utf-8")
+    return True
 
 
 def budget_period_start(ref: dt.datetime, reset_day: int | None = None) -> dt.date:
@@ -901,23 +1077,40 @@ def _status(x: Any) -> str:
 
 def run_swarm(runtime: Any, store: Any, preset: str, user_vars: dict, *, timeout_s: int,
               poll_s: float = 2.0, clock: Callable[[], float] = time.monotonic,
-              sleep: Callable[[float], None] = time.sleep) -> Any:
+              sleep: Callable[[float], None] = time.sleep,
+              budget_usd: float | None = None, price_in: float = 0.0, price_out: float = 0.0) -> tuple[Any, str | None]:
+    """Kør et preset og vent. Returnerer (run, stop) hvor stop er None, "timeout" eller "budget".
+
+    Stop-grunden holdes uden for Vibe-Tradings SwarmRun (en pydantic-model, der afviser nye felter: før
+    19/10/2026 gav ``run.timed_out = True`` en ValueError, og en 40 minutters kørsel blev registreret som fejl
+    med 0 USD). Budgettet tjekkes undervejs: overstiger de foreløbige tokens budgettet, afbrydes kørslen, og de
+    færdige agenters rapporter bevares.
+    """
     # Agenterne får ikke shell-adgang (bash-værktøjet udelades); de bruger
     # Vibe-Tradings egne data- og analyseværktøjer.
     run = runtime.start_run(preset, user_vars, include_shell_tools=False)
     deadline = clock() + timeout_s
     current = run
+
+    def cost(r: Any) -> float:
+        tin = float(getattr(r, "total_input_tokens", 0) or 0)
+        tout = float(getattr(r, "total_output_tokens", 0) or 0)
+        return tin / 1e6 * price_in + tout / 1e6 * price_out
+
+    def stop(reason: str) -> tuple[Any, str]:
+        with contextlib.suppress(Exception):
+            runtime.cancel_run(run.id)
+        sleep(min(5.0, poll_s * 2))
+        return store.load_run(run.id) or current, reason
+
     while True:
         current = store.load_run(run.id) or current
         if _status(current.status) in TERMINAL:
-            return current
+            return current, None
         if clock() > deadline:
-            with contextlib.suppress(Exception):
-                runtime.cancel_run(run.id)
-            sleep(min(5.0, poll_s * 2))
-            current = store.load_run(run.id) or current
-            current.timed_out = True  # type: ignore[attr-defined]
-            return current
+            return stop("timeout")
+        if budget_usd is not None and cost(current) > budget_usd:
+            return stop("budget")
         sleep(poll_s)
 
 
@@ -931,16 +1124,17 @@ def _cap(text: str | None, n: int) -> str | None:
 #   1) en struktureret plan ("## Plan" + punkter med vægte i %) der slutter "Executing the data-gathering calls now."
 #   2) en kort statusbesked der slutter fremadrettet ("Jeg færdiggør nu rapporten.", "Now let me get …").
 # En rigtig rapport har en resultat-overskrift (konklusion, vurdering, anbefaling …) eller en tabel.
-_PLAN_MARKERS = re.compile(r"\b(executing|i will|i'll|let me|next,? i|now i|starting with|jeg vil|jeg starter|"
+_PLAN_MARKERS = re.compile(r"\b(executing|i will|i'll|let me (?!know)|next,? i|now i|starting with|jeg vil|jeg starter|"
                            r"nu henter|planen er|først henter)(?![a-zæøå])", re.I)
 _RESULT_WORDS = re.compile(r"(konklusion|conclusion|anbefal|recommend|vurdering|assessment)", re.I)
-_FORWARD_TAIL = re.compile(r"\b(executing|now (?:i'?ll|i will|let me|i am going to)|let me|i'?ll now|i will now|i'?m now|"
+_FORWARD_TAIL = re.compile(r"\b(executing|now (?:i'?ll|i will|let me|i am going to)|let me (?:now |also |just )?(?:get|fetch|run|"
+                           r"check|compute|calculate|pull|load|start|call|gather|verify)|i'?ll now|i will now|i'?m now|"
                            r"proceeding|starting (?:with|now)|then (?:write|run|compile)|next,? i|jeg færdiggør|"
                            r"færdiggør nu|nu (?:henter|skriver|laver|går|beregner|kører)|jeg går (?:nu )?i gang|"
                            r"jeg (?:skriver|henter|beregner|kører) nu|herefter (?:skriver|henter))(?![a-zæøå])", re.I)
 _RESULT_HEADING = re.compile(r"^[ \t]*(?:#{1,6}[ \t]*|\*\*)(?:\d+[.)][ \t]*)?[^\n]{0,40}?(konklusion|conclusion|"
                              r"sammenfatning|resumé|summary|findings|anbefaling|recommendation|resultat|results|vurdering|"
-                             r"assessment|beslutning|decision|scenari)", re.I | re.M)
+                             r"assessment|beslutning|decision)", re.I | re.M)
 _PLAN_HEADING = re.compile(r"[ \t]*(?:#{1,6}[ \t]*)?(?:\*\*)?(plan|approach|fremgangsmåde|tilgang|metode)(?![a-zæøå])", re.I)
 
 
@@ -960,7 +1154,8 @@ def classify_report(summary: str | None) -> str:
 
 
 def summarize_run(run: Any, preset: str, reason: str, started: dt.datetime, duration_s: float,
-                  *, price_in: float, price_out: float, report_cap: int = 60_000, task_cap: int = 16_000) -> dict:
+                  *, price_in: float, price_out: float, report_cap: int = 60_000, task_cap: int = 16_000,
+                  stopped: str | None = None) -> dict:
     roles = {a.id: getattr(a, "role", a.id) for a in (getattr(run, "agents", None) or [])}
     tin = int(getattr(run, "total_input_tokens", 0) or 0)
     tout = int(getattr(run, "total_output_tokens", 0) or 0)
@@ -973,9 +1168,7 @@ def summarize_run(run: Any, preset: str, reason: str, started: dt.datetime, dura
             "iterations": int(getattr(t, "worker_iterations", 0) or 0),
             "started_at": getattr(t, "started_at", None), "completed_at": getattr(t, "completed_at", None),
         })
-    status = _status(run.status)
-    if getattr(run, "timed_out", False):
-        status = "timeout"
+    status = stopped or _status(run.status)
     return {
         "preset": preset, "label": PRESET_LABELS.get(preset, preset), "reason": reason,
         "run_id": run.id, "status": status,
@@ -1004,9 +1197,32 @@ def _derive(passphrase: str, salt: bytes, iterations: int) -> bytes:
     return PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=iterations).derive(passphrase.encode("utf-8"))
 
 
+def _canonical(value: Any) -> Any:
+    """Samme talform som JavaScript: 8.0 bliver 8, så AAD'en er ens i Python og i browseren."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        if value != value or value in (float("inf"), float("-inf")):
+            raise ValueError("public metadata må ikke indeholde NaN/inf")
+        if value.is_integer():
+            return int(value)
+        if "e" in repr(value):  # 1e-05 skrives anderledes i JavaScript (0.00001): undgå tallet i metadata
+            raise ValueError("public metadata må ikke indeholde tal i eksponentform")
+        return value
+    if isinstance(value, dict):
+        return {str(k): _canonical(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonical(v) for v in value]
+    return value
+
+
 def aad_bytes(public: dict) -> bytes:
-    """Metadata bindes til krypteringen. Skal give samme bytes som JSON.stringify i browseren."""
-    return json.dumps(public, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    """Metadata bindes til krypteringen. Skal give samme bytes som JSON.stringify(sortKeys(public)) i browseren.
+
+    Kørslen 19/10/2026: et beløb som 8.0 blev til "8.0" her og "8" i browseren, så rapporten kunne ikke låses
+    op. Nu skrives tal som i JavaScript, og nøgler sorteres rekursivt (browseren sorterer det samme).
+    """
+    return json.dumps(_canonical(public), sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
 def encrypt(payload: dict, passphrase: str, public: dict, *, iterations: int = PBKDF2_ITER) -> dict:
@@ -1043,6 +1259,13 @@ def fit_payload(payload: dict, passphrase: str, public: dict, iterations: int) -
                 t["summary"] = _cap(t.get("summary"), tc)
         payload["truncated"] = True
         env = encrypt(payload, passphrase, public, iterations=iterations)
+    if len(json.dumps(env)) > MAX_ENVELOPE_BYTES:  # sidste udvej: log-udsnit og datatjek-detaljer
+        payload["log_tail"] = _cap(payload.get("log_tail"), 1500)
+        if isinstance(payload.get("datacheck"), dict):
+            payload["datacheck"] = {k: v for k, v in payload["datacheck"].items()
+                                    if k in ("status", "issues", "counts", "ref_date", "earnings", "portfolio", "sources")}
+        payload["truncated"] = True
+        env = encrypt(payload, passphrase, public, iterations=iterations)
     return env
 
 
@@ -1065,7 +1288,10 @@ def write_results(results: Path, envelope: dict) -> None:
     body = json.dumps(envelope, ensure_ascii=False, indent=1) + "\n"
     rid = pub.get("run_id") or pub["week_id"]
     (results / "weeks" / f"{rid}.enc.json").write_text(body, "utf-8")
-    (results / "latest.enc.json").write_text(body, "utf-8")
+    latest_f = results / "latest.enc.json"
+    current = read_latest_meta(results) or {}
+    if str(current.get("generated_at") or "") <= str(pub.get("generated_at") or ""):  # en ældre kørsel overskriver ikke nyeste
+        latest_f.write_text(body, "utf-8")
     idx_f = results / "index.json"
     try:
         idx = json.loads(idx_f.read_text("utf-8"))
@@ -1074,16 +1300,31 @@ def write_results(results: Path, envelope: dict) -> None:
     idx["weeks"] = [w for w in idx.get("weeks", []) if (w.get("run_id") or w.get("week_id")) != rid]
     idx["weeks"].insert(0, pub)
     idx["weeks"] = sorted(idx["weeks"], key=lambda w: w["generated_at"], reverse=True)[:156]
-    idx["latest"] = rid
+    idx["latest"] = idx["weeks"][0].get("run_id") or idx["weeks"][0]["week_id"]
     idx_f.write_text(json.dumps(idx, ensure_ascii=False, indent=1) + "\n", "utf-8")
     led_f = results / "ledger.json"
     try:
         led = json.loads(led_f.read_text("utf-8"))
     except Exception:
         led = {"schema": SCHEMA, "runs": []}
+    led["runs"] = [e for e in led.get("runs", []) if (e.get("run_id") or e.get("week_id")) != rid]
     led["runs"].append({k: pub.get(k) for k in ("run_id", "generated_at", "week_id", "cost_usd", "status", "dry_run", "runs", "completed")})
-    led["runs"] = led["runs"][-400:]
+    led["runs"] = sorted(led["runs"], key=lambda e: str(e.get("generated_at") or ""))[-400:]
     led_f.write_text(json.dumps(led, ensure_ascii=False, indent=1) + "\n", "utf-8")
+
+
+def env_num(name: str, default: float, *, lo: float, hi: float) -> float:
+    """Tal fra workflow-input eller repo-variabel. "35,5" accepteres; andet giver en kort fejl uden traceback."""
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return float(default)
+    try:
+        value = float(raw.replace(",", "."))
+    except ValueError:
+        raise ValueError(f"{name} skal være et tal (fik tekst)") from None
+    if not lo <= value <= hi:
+        raise ValueError(f"{name} skal ligge mellem {lo:g} og {hi:g}")
+    return value
 
 
 def set_output(**kv: Any) -> None:
@@ -1242,7 +1483,62 @@ def patch_vibe_trading() -> dict[str, str]:
     except Exception as exc:  # noqa: BLE001
         status["tool_context"] = f"ikke anvendt: {type(exc).__name__}"
     status["temperature"] = _patch_temperature()
+    status["prompt"] = _patch_worker_prompt()
+    status["grounding"] = _patch_grounding()
     return status
+
+
+_VT_HARD_LIMIT = "You have a HARD LIMIT of 20 tool calls. After that you will be cut off. Work efficiently.\n\n"
+_VT_PLAN_LINE = "**Plan (0 tool calls):** Before calling any tool, state your plan in 3-5 bullet points.\n\n"
+_VT_PROMPT_FIX = ("Work efficiently: context is limited, so fetch only what you need, note the numbers as they arrive, "
+                  "and never finish with a plan instead of a result.\n\n")
+
+
+def _patch_worker_prompt() -> str:
+    """Vibe-Trading 0.1.16 skriver "HARD LIMIT of 20 tool calls" og beder om en plan først, selv om grænsen ikke
+    håndhæves (max_iterations er 50). Agenterne stoppede efter 20 kald eller afleverede planen (19/10/2026)."""
+    try:
+        from src.swarm import worker as w
+
+        orig = getattr(w, "_vibetrad_orig_build_worker_prompt", None) or w.build_worker_prompt
+        probe = orig.__doc__ or ""
+        if getattr(w.build_worker_prompt, "_vibetrad", False):
+            return "ok (allerede anvendt)"
+
+        def build_worker_prompt(*args: Any, **kwargs: Any) -> str:
+            text = orig(*args, **kwargs)
+            return text.replace(_VT_HARD_LIMIT, _VT_PROMPT_FIX).replace(_VT_PLAN_LINE, "")
+
+        build_worker_prompt._vibetrad = True  # type: ignore[attr-defined]
+        build_worker_prompt.__doc__ = probe
+        w._vibetrad_orig_build_worker_prompt = orig
+        w.build_worker_prompt = build_worker_prompt
+        return "ok"
+    except Exception as exc:  # noqa: BLE001
+        return f"ikke anvendt: {type(exc).__name__}"
+
+
+def _patch_grounding() -> str:
+    """Grounding henter 30 dages kurser for symboler i opgaveteksten. Bare store ord (SEK, ISK, NOVO, PASS …)
+    blev gjort til .US-symboler og hentet forgæves (kørslen 19/10/2026: NOVO.US, DKK.US). Vibetrad skriver altid
+    .US eksplicit, så kun eksplicitte symboler bruges."""
+    try:
+        from src.swarm import grounding as g
+
+        if getattr(g.extract_symbols_from_user_vars, "_vibetrad", False):
+            return "ok (allerede anvendt)"
+        orig = g.extract_symbols_from_user_vars
+
+        def extract(user_vars: dict) -> list:
+            found = orig(user_vars)
+            text = "\n".join(str(v) for v in (user_vars or {}).values() if isinstance(v, str))
+            return [s for s in found if s in text]  # kun symboler, der står ordret i teksten
+
+        extract._vibetrad = True  # type: ignore[attr-defined]
+        g.extract_symbols_from_user_vars = extract
+        return "ok"
+    except Exception as exc:  # noqa: BLE001
+        return f"ikke anvendt: {type(exc).__name__}"
 
 
 # Claude-modeller af 5. generation afviser `temperature`. Vibe-Trading opdager det først ved første fejl, og i
@@ -1309,11 +1605,23 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", default=os.environ.get("VT_DRY_RUN", "") == "true")
     ap.add_argument("--now", default=os.environ.get("VT_NOW"))
     ap.add_argument("--gate-only", action="store_true", help="afgør kun om der skal køres (ingen secrets)")
+    ap.add_argument("--merge-results", metavar="FIL",
+                    help="læg en gemt kuvert (results/weeks/*.enc.json) ind i index, ledger og latest igen (push-konflikt)")
     args = ap.parse_args(argv)
 
     con = Console()
     results = Path(args.results)
     results.mkdir(parents=True, exist_ok=True)
+    if args.merge_results:
+        try:
+            envelope = json.loads(Path(args.merge_results).read_text("utf-8"))
+            assert envelope.get("schema") == SCHEMA and envelope.get("public", {}).get("generated_at"), "ikke en resultat-kuvert"
+            write_results(results, envelope)
+        except Exception as exc:  # noqa: BLE001
+            con.say(f"FEJL: kuverten kunne ikke lægges ind ({type(exc).__name__}).")
+            return 3
+        con.say(f"Kuvert {envelope['public'].get('run_id') or envelope['public']['week_id']} lagt ind i resultaterne igen.")
+        return 0
     ref = now_sto(args.now)
     week = week_window(ref)
 
@@ -1339,16 +1647,21 @@ def main(argv: list[str] | None = None) -> int:
         set_output(ran="false", status="config_error", week=week["id"])
         return 2
 
-    max_swarms = int(os.environ.get("VT_MAX_SWARMS", "6"))
-    run_budget = float(os.environ.get("VT_RUN_BUDGET_USD") or "35")
-    month_budget = float(os.environ.get("VT_MONTHLY_BUDGET_USD", "95"))
-    cio_reserve = float(os.environ.get("VT_CIO_RESERVE_USD", "8"))
-    min_swarm = float(os.environ.get("VT_MIN_SWARM_USD", "0.5"))
+    try:
+        max_swarms = int(env_num("VT_MAX_SWARMS", 6, lo=1, hi=12))
+        run_budget = env_num("VT_RUN_BUDGET_USD", 35, lo=0, hi=1000)
+        month_budget = env_num("VT_MONTHLY_BUDGET_USD", 95, lo=0, hi=10000)
+        cio_reserve = env_num("VT_CIO_RESERVE_USD", 8, lo=0, hi=100)
+        min_swarm = env_num("VT_MIN_SWARM_USD", 0.5, lo=0, hi=100)
+        timeout_s = int(env_num("VT_SWARM_TIMEOUT_MIN", 45, lo=1, hi=300) * 60)
+        price_in = env_num("VT_PRICE_IN_PER_MTOK", 2, lo=0, hi=1000)
+        price_out = env_num("VT_PRICE_OUT_PER_MTOK", 10, lo=0, hi=1000)
+        iterations = int(env_num("VT_PBKDF2_ITER", PBKDF2_ITER, lo=1000, hi=5_000_000))
+    except ValueError as exc:
+        con.say(f"FEJL: {exc}")
+        set_output(ran="false", status="config_error", week=week["id"])
+        return 2
     plan_kind = os.environ.get("VT_PLAN", "fuld").strip().lower() or "fuld"
-    timeout_s = int(float(os.environ.get("VT_SWARM_TIMEOUT_MIN", "45")) * 60)
-    price_in = float(os.environ.get("VT_PRICE_IN_PER_MTOK", "2"))
-    price_out = float(os.environ.get("VT_PRICE_OUT_PER_MTOK", "10"))
-    iterations = int(os.environ.get("VT_PBKDF2_ITER", str(PBKDF2_ITER)))
 
     period_start = budget_period_start(ref)
     spent_before = month_spent(results, ref)  # også i en tørkørsel, så budgettet kan tjekkes gratis
@@ -1457,28 +1770,43 @@ def main(argv: list[str] | None = None) -> int:
         con.say(f"FEJL ved opstart af Vibe-Trading ({errors[-1]['type']}). Detaljer ligger krypteret i rapporten.")
 
     used_usd = 0.0
+    if not args.dry_run:
+        silence_rest(log_path)  # Vibe-Tradings tråde (også efter en tidsgrænse) må aldrig nå den offentlige log
     for step in plan if runtime else []:
         label = PRESET_LABELS.get(step["preset"], step["preset"])
         left = budget - used_usd
         reserve = 0.0 if step.get("cio") else cio_reserve
         if left < reserve + min_swarm:
-            why = ("Budget for denne kørsel brugt" if budget < run_budget or used_usd else "Månedsbudget brugt")
+            why = ("Månedsbudget brugt" if budget < run_budget and not used_usd else "Budget for denne kørsel brugt")
             runs.append({"preset": step["preset"], "label": label, "reason": step["reason"], "status": "skipped",
                          "skip_reason": f"{why} ({used_usd:.2f} af {budget:.2f} USD; {cio_reserve:.0f} USD holdes til CIO'en)",
                          "tasks": [], "tokens_in": 0, "tokens_out": 0, "est_cost_usd": 0})
             con.say(f"· {label}: sprunget over (budget)")
             continue
+        system_extra: dict[str, str] = {}
         if step.get("cio"):
-            step["vars"]["goal"] = cio_goal_with_inputs(step["vars"]["goal"] + dtj.cio_instruction(datacheck), runs)
+            step["vars"]["goal"] = step["vars"]["goal"] + dtj.cio_instruction(datacheck)
+            digest = cio_digest(runs)
+            if args.dry_run:
+                step["vars"]["goal"] += digest
+            elif digest:
+                system_extra["chief_investment_officer"] = digest
+                step["vars"]["goal"] += ("\n\nDe øvrige teams' konklusioner står i afsnittet 'Konklusioner fra ugens øvrige "
+                                         "Vibe-Trading-teams' i din instruks.")
+        if not args.dry_run:
+            with contextlib.suppress(Exception):  # kun kosmetik for agenterne: må aldrig stoppe kørslen
+                prepare_step_preset(Path.home() / ".vibe-trading" / "swarm" / "presets", step["preset"], step["vars"],
+                                    system_extra)
         started, m0 = dt.datetime.now(STO), time.monotonic()
         con.say(f"· {label}: starter")
         with quiet_fds(log_path):
             try:
                 validate_vars(step["preset"], step["vars"], args.dry_run)
-                run = run_swarm(runtime, store, step["preset"], step["vars"], timeout_s=timeout_s,
-                                poll_s=0.01 if args.dry_run else 5.0)
+                run, stopped = run_swarm(runtime, store, step["preset"], step["vars"], timeout_s=timeout_s,
+                                         poll_s=0.01 if args.dry_run else 5.0, budget_usd=left - reserve,
+                                         price_in=price_in, price_out=price_out)
                 summary = summarize_run(run, step["preset"], step["reason"], started, time.monotonic() - m0,
-                                        price_in=price_in, price_out=price_out)
+                                        price_in=price_in, price_out=price_out, stopped=stopped)
                 if step.get("context"):
                     summary["context"] = step["context"]
                 runs.append(summary)
@@ -1547,9 +1875,37 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     kb = len(json.dumps(envelope)) / 1024
     con.say(f"Resultat: {status} · {len(done)}/{len(runs)} swarms · {tin + tout:,} tokens · {kb:.0f} KB krypteret".replace(",", " "))
-    set_output(ran="true", status=status, week=week["id"], run_id=run_id)
+    set_output(ran="true", status=status, week=week["id"], run_id=run_id,
+               result_file=str(results / "weeks" / f"{run_id}.enc.json"))
     return 0
 
 
+def _frames(tb: Any, limit: int = 6) -> str:
+    """Stien til fejlen uden fejlbeskeden: fil, linje og funktion (offentlig kode), aldrig værdier eller locals."""
+    frames = traceback.extract_tb(tb)[-limit:]
+    return " ← ".join(f"{Path(f.filename).name}:{f.lineno} {f.name}" for f in reversed(frames)) or "ukendt sted"
+
+
+def _main_guarded() -> int:
+    """Uventede fejl må aldrig skrive en traceback (med porteføljedata) i den offentlige GitHub-log.
+
+    Loggen får kun fejltypen og stien til fejlen (filnavne, linjenumre og funktionsnavne fra den offentlige
+    kode), så fejlen kan findes. Selve beskeden (som kan indeholde en ticker eller et beløb) går kun til den
+    private logfil på runneren."""
+    try:
+        return main()
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        with contextlib.suppress(Exception):
+            log = Path(tempfile.gettempdir()) / "vibetrad-vt.log"
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write(traceback.format_exc())
+        Console().say(f"FEJL: uventet {type(exc).__name__} i runneren ved {_frames(exc.__traceback__)}. "
+                      "Fejlbeskeden står kun i den private log.")
+        set_output(ran="false", status="error")
+        return 3
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_main_guarded())
