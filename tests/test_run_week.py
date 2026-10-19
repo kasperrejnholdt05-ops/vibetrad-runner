@@ -780,6 +780,7 @@ def test_symbol_guidance_for_agents_that_fetch_prices(tmp_path):
     assert "share class" in screener["system_prompt"] and "whole-company figure" in screener["system_prompt"]
     assert "China A-share" not in writer["system_prompt"] and "whole-company figure" not in writer["system_prompt"]
     assert "NOVO-B.CO" in screener["system_prompt"] and "USDSEK=X" in screener["system_prompt"]
+    assert "at least 30 daily bars" in screener["system_prompt"]
 
 
 def test_every_agent_gets_the_isk_and_nordnet_rules(tmp_path):

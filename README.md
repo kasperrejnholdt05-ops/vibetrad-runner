@@ -137,7 +137,7 @@ Reglerne: en tekst med en resultat-overskrift (konklusion, vurdering, anbefaling
 
 ## Symboler og gebyrer
 
-Alle agenter med data-værktøjer får at vide, at amerikanske aktier og ETF'er skal skrives med `.US` (fx `ACWI.US`). Uden suffix tolker Vibe-Trading 0.1.16 symbolet som en kinesisk A-aktie, og kaldet fejler. Nordiske aktier beholder deres børs-suffix og er aldrig `.US` (Novo Nordisk B er `NOVO-B.CO`, ikke `NOVO.US`), og valutakurser skrives `USDSEK=X`/`DKKSEK=X`, aldrig `DKK.US` (begge fejl skete i kørslen 19/10/2026). De må heller ikke citere tal fra et kald, der fejlede, eller angive en kurtagesats, der ikke står i deres instruks. Markedsværdi tages fra facit og regnes aldrig ud fra én aktieklasses antal aktier.
+Alle agenter med data-værktøjer får at vide, at amerikanske aktier og ETF'er skal skrives med `.US` (fx `ACWI.US`). Uden suffix tolker Vibe-Trading 0.1.16 symbolet som en kinesisk A-aktie, og kaldet fejler. Nordiske aktier beholder deres børs-suffix og er aldrig `.US` (Novo Nordisk B er `NOVO-B.CO`, ikke `NOVO.US`), og valutakurser skrives `USDSEK=X`/`DKKSEK=X`, aldrig `DKK.US` (begge fejl skete i kørslen 19/10/2026). De må heller ikke citere tal fra et kald, der fejlede, eller angive en kurtagesats, der ikke står i deres instruks. `portfolio_risk_xray` kræver mindst 30 handelsdage pr. papir: agenterne skal lade startdatoen stå tom eller gå mindst 3 måneder tilbage (i kørslen 19/10/2026 fejlede risikoudvalgets kald med "no symbol has at least 30 valid bars", fordi de brugte det korte prisvindue). Markedsværdi tages fra facit og regnes aldrig ud fra én aktieklasses antal aktier.
 
 ## ISK og Nordnet-regler
 
@@ -163,7 +163,7 @@ Risikoudvalget regner altid tabet i SEK i fire scenarier: den største position 
 
 Runneren retter to ting i Vibe-Trading, mens kørslen står på. Der ændres ikke i den installerede pakke. Status står i GitHub-loggen ("Vibe-Trading-rettelser: …"), i rapporten (`vibe_trading_patches`) og i Vibetrad under Model.
 
-- **Værktøjsresultater bevares.** I 0.1.16 overskriver hver agent alle værktøjsresultater undtagen de 3 nyeste med `[cleared]`, i hver iteration. En agent, der henter seks kurser, har dermed mistet de tre første, før den skriver, og må gentage kaldene eller skrive uden tallene. Runneren erstatter den ene blok i `_run_worker_impl`: resultaterne bevares, indtil de tilsammen fylder over 40 000 tegn (`VT_TOOL_CONTEXT_CHARS`). Så ryddes de ældste ned til halvdelen, og de 3 nyeste røres aldrig. Ryddede resultater får en markør, der siger, at kaldet lykkedes, eller at det fejlede (fejl-kuverter), så ingen agent citerer tal fra et fejlet kald. Korte resultater, hvor markøren ville fylde mere, ryddes ikke. Linjenumrene i Vibe-Tradings tracebacks er de samme som før. Det giver få ændringer i beskederne, så prompt-cachen holder. Hvis Vibe-Tradings kode ændrer sig, så blokken ikke findes, bruges originalen, og loggen siger "ikke anvendt".
+- **Værktøjsresultater bevares.** I 0.1.16 overskriver hver agent alle værktøjsresultater undtagen de 3 nyeste med `[cleared]`, i hver iteration. En agent, der henter seks kurser, har dermed mistet de tre første, før den skriver, og må gentage kaldene eller skrive uden tallene. I kørslen 19/10/2026 skrev flere agenter, at resultater var "ryddet fra konteksten", før de kunne læse dem (fx optionskæden, kvartalsregnskabet og quantlib-modulerne). Runneren erstatter den ene blok i `_run_worker_impl`: resultaterne bevares, indtil de tilsammen fylder over 40 000 tegn (`VT_TOOL_CONTEXT_CHARS`). Så ryddes de ældste ned til halvdelen, og de 3 nyeste røres aldrig. Ryddede resultater får en markør, der siger, at kaldet lykkedes, eller at det fejlede (fejl-kuverter), så ingen agent citerer tal fra et fejlet kald. Korte resultater, hvor markøren ville fylde mere, ryddes ikke. Linjenumrene i Vibe-Tradings tracebacks er de samme som før. Det giver få ændringer i beskederne, så prompt-cachen holder. Hvis Vibe-Tradings kode ændrer sig, så blokken ikke findes, bruges originalen, og loggen siger "ikke anvendt".
 - **`temperature` udelades for Claude-modeller af 5. generation** (`claude-sonnet-5`, `claude-opus-5-5` …), som afviser feltet. Vibe-Trading opdager det ellers først ved den første fejl, og i kørslen 19/10/2026 fejlede de parallelle agenters første kald derfor. `VT_TEMPERATURE=on|off` tvinger valget.
 
 En integrationstest kører den rigtige ReAct-løkke i Vibe-Trading med en falsk LLM og otte kurskald: med rettelsen ser det sidste kald alle otte resultater, og i 0.1.16 uden rettelsen er fem af dem `[cleared]`.
@@ -229,7 +229,7 @@ Opdatér `VT_PORTFOLIO` (Kopiér VT_PORTFOLIO i Vibetrad → `gh secret set VT_P
 
 ```bash
 pip install "cryptography>=42" pyyaml pytest pandas
-python -m pytest -q                      # 186 tests (integrationstestene for EODHD og Vibe-Trading-rettelserne kører kun, hvor vibe-trading-ai er installeret)
+python -m pytest -q                      # 187 tests (integrationstestene for EODHD og Vibe-Trading-rettelserne kører kun, hvor vibe-trading-ai er installeret)
 VT_PORTFOLIO="$(cat runner/portfolio.example.json)" VT_RESULTS_PASSPHRASE=0123456789abcdef \
   python runner/run_week.py --dry-run --event workflow_dispatch --results /tmp/vt-results
 ```

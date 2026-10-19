@@ -131,6 +131,9 @@ Vibe-Trading treats the symbol as a China A-share and the call fails ("no price 
 INVE-B.ST. Danish and other Nordic stocks keep their exchange suffix and are never .US (Novo Nordisk B = NOVO-B.CO,
 not NOVO.US). Currency pairs are FX symbols (USDSEK=X, DKKSEK=X), never DKK.US or USD.US.
 If a tool call fails or returns no data, say so in the report and never present a number from that call.
+portfolio_risk_xray needs at least 30 daily bars per symbol ("no symbol has at least 30 valid bars" otherwise): leave
+start_date empty (one year) or set it at least 3 months back. Never use the short ground-truth price window as the
+start date. A recently listed stock (short history in the facit) works from its listing date.
 Never state a brokerage fee (courtage) or FX fee unless it is given in your instructions.
 Market capitalisation: use the whole-company figure from the Vibetrad facit. Never compute it from one share class's
 share count (Alphabet has A, B and C shares, so GOOGL alone is far too low).

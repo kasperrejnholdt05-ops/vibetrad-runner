@@ -561,3 +561,12 @@ def test_dates_one_day_apart_outvote_a_lone_early_date():
     assert g["verified"] == "2026-10-28" and g["agree"] == 2 and g["alternatives"] == ["2026-10-20"]
     assert any("valgt 28/10/2026: flest kilder" in n for n in g["notes"])
     assert any("ret datoen i VT_PORTFOLIO" in n for n in g["notes"])
+
+
+def test_yahoo_one_day_off_counts_as_a_second_source():
+    """Kørslen 19/10: NVIDIA (EODHD 18/11, Yahoo 17/11) stod som "1 kilde, kun EODHD kender datoen"."""
+    p = rw.load_portfolio(json.dumps(dict(json.loads(RAW_P), next_reports_source={"GOOGL.US": "eodhd"})))
+    vt, eod = sources(vt_prof={"GOOGL.US": {"earnings_dates": ["2026-10-27"]}, "SPCX.US": {"earnings_dates": ["2026-11-03"]}})
+    g = next(e for e in dtj.run(p, WEEK, REF, vt=vt, eod=eod)["earnings"] if e["ticker"] == "GOOGL.US")
+    assert g["verified"] == "2026-10-28" and g["agree"] == 2 and g["status"] == "ok" and g["alternatives"] == []
+    assert not any("kender datoen" in n for n in g["notes"])
