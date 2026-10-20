@@ -9,11 +9,17 @@ name: Vibetrad ugekørsel
 # run_week.py springer over, hvis klokken i Stockholm er før 08:00, eller ugen
 # allerede er kørt. 09:30 UTC er et sikkerhedsnet, hvis GitHub var forsinket
 # eller den første kørsel fejlede.
+# Kanariefuglen: hver nat kl. 03:30 UTC (05:30 sommertid / 04:30 vintertid) kører den samme
+# kæde som en gratis tørkørsel (runner/kanarie.py): secrets, Anthropic-nøgle og model, Vibe-Trading-
+# installation, EODHD, datatjek, regnskabsdatoer, FRED, makro, kryptering og push. Den skriver kun
+# results/canary.json + results/canary/latest.enc.json – aldrig ugerapporterne. Fejler et tjek,
+# bliver kørslen rød, og GitHub sender den sædvanlige fejlmail. Kører uanset VT_SCHEDULE.
 on:
   schedule:
     - cron: "0 6 * * 6"
     - cron: "0 7 * * 6"
     - cron: "30 9 * * 6"
+    - cron: "30 3 * * *"
   workflow_dispatch:
     inputs:
       plan:
@@ -67,7 +73,8 @@ jobs:
       VT_PRICE_IN_PER_MTOK: ${{ vars.VT_PRICE_IN_PER_MTOK || '2' }}
       VT_PRICE_OUT_PER_MTOK: ${{ vars.VT_PRICE_OUT_PER_MTOK || '10' }}
       VT_MONTHLY_SLOT: ${{ inputs.monthly_slot || '' }}
-      VT_DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
+      VT_CANARY: ${{ github.event.schedule == '30 3 * * *' && 'true' || 'false' }}
+      VT_DRY_RUN: ${{ (inputs.dry_run || github.event.schedule == '30 3 * * *') && 'true' || 'false' }}
       VT_DATATJEK: ${{ vars.VT_DATATJEK || 'on' }}
       # Vibe-Tradings web_search må ikke falde tilbage på kinesiske søgemaskiner.
       VIBE_TRADING_SEARCH_BING_FALLBACK: "0"
@@ -91,12 +98,13 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
+      # Kanariefuglen installerer også Vibe-Trading: så opdages det, hvis requirements.txt ikke længere kan løses.
       - name: Installer Vibe-Trading
-        if: steps.gate.outputs.ran == 'true' && env.VT_DRY_RUN != 'true'
+        if: steps.gate.outputs.ran == 'true' && (env.VT_DRY_RUN != 'true' || env.VT_CANARY == 'true')
         run: pip install --quiet -r requirements.txt
 
       - name: Installer kryptering (tørkørsel)
-        if: steps.gate.outputs.ran == 'true' && env.VT_DRY_RUN == 'true'
+        if: steps.gate.outputs.ran == 'true' && env.VT_DRY_RUN == 'true' && env.VT_CANARY != 'true'
         run: pip install --quiet "cryptography>=42" pyyaml
 
       - name: Kør Vibe-Trading swarms
@@ -117,7 +125,7 @@ jobs:
         env:
           GH_PUSH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RESULT_FILE: ${{ steps.run.outputs.result_file }}
-          COMMIT_MSG: "Ugerapport ${{ steps.run.outputs.week }} (${{ steps.run.outputs.status }}${{ env.VT_DRY_RUN == 'true' && ', tørkørsel' || '' }})"
+          COMMIT_MSG: ${{ env.VT_CANARY == 'true' && format('Kanariefugl {0} ({1})', steps.run.outputs.day, steps.run.outputs.status) || format('Ugerapport {0} ({1}{2})', steps.run.outputs.week, steps.run.outputs.status, env.VT_DRY_RUN == 'true' && ', tørkørsel' || '') }}
         run: |
           git config user.name "vibetrad-bot"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -144,7 +152,7 @@ jobs:
       # Sikkerhedsnet: den krypterede rapport gemmes også på kørslen i 14 dage, så en kørsel til
       # op til 35 USD aldrig går tabt, selv hvis push fejler. Hent den under kørslens "Artifacts".
       - name: Backup af krypteret resultat
-        if: always() && steps.run.outputs.ran == 'true'
+        if: always() && steps.run.outputs.ran == 'true' && env.VT_CANARY != 'true'
         uses: actions/upload-artifact@v6
         with:
           name: vibetrad-resultat-${{ steps.run.outputs.run_id || github.run_id }}
@@ -158,5 +166,9 @@ jobs:
       - name: Marker fejl
         if: steps.run.outputs.status == 'failed'
         run: |
-          echo "Ingen swarms gennemført. Lås rapporten op i Vibetrad for detaljer."
+          if [ "$VT_CANARY" = "true" ]; then
+            echo "Kanariefuglen fandt en fejl i kæden – se tjekkene i loggen ovenfor og i results/canary.json."
+          else
+            echo "Ingen swarms gennemført. Lås rapporten op i Vibetrad for detaljer."
+          fi
           exit 1

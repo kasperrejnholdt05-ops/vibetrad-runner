@@ -443,7 +443,8 @@ def run_main(tmp_path, *extra, **env_over):
     env = {**base, "VT_PORTFOLIO": json.dumps(PORTFOLIO), "VT_RESULTS_PASSPHRASE": PASS, "VT_SCHEDULE": "on",
            "VT_PBKDF2_ITER": "1000", "GITHUB_OUTPUT": str(tmp_path / "out.txt"), "EODHD_API_KEY": "",
            "EODHD_API_TOKEN": "", "FRED_API_KEY": "", "VT_DATATJEK_VT": "off", **env_over}
-    env.pop("ANTHROPIC_API_KEY", None)
+    if "ANTHROPIC_API_KEY" not in env_over:
+        env.pop("ANTHROPIC_API_KEY", None)
     return subprocess.run([sys.executable, str(ROOT / "runner" / "run_week.py"), "--results", str(tmp_path / "results"),
                            "--dry-run", *extra], capture_output=True, text=True, env=env, timeout=120)
 
@@ -731,6 +732,10 @@ def test_dry_run_checks_fred_against_fake_server_and_key_never_leaks(tmp_path):
             q = dict(urllib.parse.parse_qsl(u.query))
             seen.append((u.path, q))
             body = {"observations": [{"date": "2026-09-10", "value": "4.00"}, {"date": "2026-10-14", "value": "4.12"}]}
+            if q.get("series_id") == "NCBEILQ027S":  # Buffett: aktier (mio. USD) kvartalsvis
+                body = {"observations": [{"date": "2026-01-01", "value": "60000000"}, {"date": "2026-04-01", "value": "66000000"}]}
+            elif q.get("series_id") == "GDP":  # BNP (mia. USD)
+                body = {"observations": [{"date": "2026-01-01", "value": "30000"}, {"date": "2026-04-01", "value": "30000"}]}
             raw = json.dumps(body).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -750,13 +755,15 @@ def test_dry_run_checks_fred_against_fake_server_and_key_never_leaks(tmp_path):
         srv.shutdown()
     assert p.returncode == 0, p.stderr
     log = p.stdout + p.stderr
-    assert "FRED: ja, nøglen virker (7 af 7 serier, 7 kald · US 10-årig statsrente 4,12 % pr. 14/10/2026)" in log
+    assert ("FRED: ja, nøglen virker (7 af 7 serier, 9 kald · US 10-årig statsrente 4,12 % pr. 14/10/2026 · "
+            "Buffett-indikator 220 % (Q2 2026))") in log
     assert FRED_KEY not in log
     assert {path for path, _ in seen} == {"/series/observations"} and all(q["api_key"] == FRED_KEY for _, q in seen)
     assert seen[0][1]["observation_end"] == "2026-10-15"
     res = tmp_path / "results"
     data = rw.decrypt(json.loads((res / "latest.enc.json").read_text()), PASS)
     assert data["fred"]["ok"] is True and data["fred"]["series"][0]["value"] == 4.12
+    assert data["fred"]["buffett"]["value"] == 220.0 and data["fred"]["buffett"]["prev"] == 200.0
     assert FRED_KEY not in json.dumps(data) and FRED_KEY not in (res / "index.json").read_text()
 
 

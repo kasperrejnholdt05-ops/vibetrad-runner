@@ -2,7 +2,7 @@
 
 Kører det rigtige [HKUDS/Vibe-Trading](https://github.com/HKUDS/Vibe-Trading) på min Nordnet-ISK, **når jeg trykker "Start ny kørsel"** i Vibetrad (eller Actions → Vibetrad ugekørsel → Run workflow), og lægger en krypteret rapport klar til Vibetrad-siden på claude.ai.
 
-Den automatiske lørdagskørsel (kl. 08:00 svensk tid) er slået fra. Slå den til igen med repo-variablen `VT_SCHEDULE=on`.
+Den automatiske lørdagskørsel (kl. 08:00 svensk tid) er slået fra. Slå den til igen med repo-variablen `VT_SCHEDULE=on`. Uafhængigt af den kører **kanariefuglen** hver nat: en gratis tørkørsel af hele kæden (se nedenfor).
 
 ```
 knaptryk   GitHub Actions ── vibe-trading-ai (SwarmRuntime) ── Anthropic API
@@ -117,8 +117,14 @@ FRED dækker kun USA, og investoren handler i SEK, DKK og EUR. `runner/makro.py`
 
 - Seneste værdi, datoen og ændringen over ca. en måned kommer som tabellen **"Makro (FRED)"** i alle agenters instruks, ved siden af datatjekkets facit. En serie markeres "forældet", hvis den er ældre end 7 dage (USD/SEK: 16 dage).
 - `get_macro_series` (Vibe-Tradings eget FRED-værktøj) gives til makro-desken, risikoudvalgets regime-agent og CIO'en med en kort guide til nyttige serier. Afviser FRED nøglen i nøgletjekket, tilføjes værktøjet ikke.
-- GitHub-loggen viser fx `FRED: ja, nøglen virker (7 af 7 serier, 7 kald · US 10-årig statsrente 4,12 % pr. 14/10/2026)`, `FRED: nej (secret FRED_API_KEY mangler)` eller `FRED: nøglen virker ikke (forkert nøgle)`.
+- GitHub-loggen viser fx `FRED: ja, nøglen virker (7 af 7 serier, 9 kald · US 10-årig statsrente 4,12 % pr. 14/10/2026 · Buffett-indikator 270 % (Q2 2026))`, `FRED: nej (secret FRED_API_KEY mangler)` eller `FRED: nøglen virker ikke (forkert nøgle)`.
 - En afvist nøgle stopper efter første kald, et nedbrud efter to serier i træk. Nøglen fjernes fra alle fejlbeskeder og logs. Snapshot og fejl ligger krypteret i rapporten (`fred`).
+
+### Buffett-indikatoren
+
+To ekstra FRED-kald pr. kørsel giver **Buffett-indikatoren**: markedsværdien af amerikanske ikke-finansielle selskabers aktier (`NCBEILQ027S`, Feds Z.1-statistik, mio. USD) delt med USA's BNP (`GDP`, BEA, mia. USD i årstakt), begge kvartalsvis og dateret på kvartalets første dag. Runneren henter 11 års kvartaler, så de seneste 10 år altid er fulde, og beregner seneste kvartal, forrige kvartal, 10-års gennemsnit, interval og percentil (`fred.buffett_ratio`). Det er den FRED-baserede udgave af indikatoren (Wilshire 5000-indekset er ikke længere offentligt), så niveauet ligger lidt under de tal, der cirkulerer med hele markedet i tælleren – sammenlign derfor med sin egen historik (percentilen), ikke med andres absolutte tal.
+
+Linjen står i alle agenters makro-facit med en udtrykkelig advarsel: kontekst for amerikansk værdiansættelse, aldrig et timing-signal, og den siger intet om enkeltaktier. I Vibetrad vises den under Datatjek → Makro (FRED) som en skala med 10-års interval, gennemsnit og det seneste kvartal. Findes en af serierne ikke, fortsætter kørslen uden indikatoren (`fred.buffett_error`).
 
 ## Uger og datoer
 
@@ -250,11 +256,31 @@ Upload resultatet i Vibe-Tradings Agent-chat. Shadow-backtesten understøtter am
 
 Opdatér `VT_PORTFOLIO` (Kopiér VT_PORTFOLIO i Vibetrad → `gh secret set VT_PORTFOLIO --repo kasperrejnholdt05-ops/vibetrad-runner`). Ellers analyserer lørdagens kørsel den gamle beholdning.
 
+## Kanariefuglen (daglig gratis tørkørsel)
+
+Lørdagens rigtige kørsel koster penge og må ikke være den første, der opdager, at en nøgle er udløbet. Derfor kører workflowet hver nat kl. 03:30 UTC (05:30 sommertid, 04:30 vintertid) som **kanariefugl**: `VT_CANARY=true` + `VT_DRY_RUN=true` (`runner/kanarie.py`). Den kører den samme kæde som en rigtig kørsel, men uden agenter og uden API-kredit, og tjekker:
+
+| Tjek | Hvad der testes |
+|---|---|
+| Secrets | `VT_RESULTS_PASSPHRASE` og `VT_PORTFOLIO` findes og kan læses |
+| Anthropic-nøgle og model | `ANTHROPIC_API_KEY` og `LANGCHAIN_MODEL_NAME` (`VT_MODEL`) mod det gratis `count_tokens`-endepunkt: afvist nøgle, ukendt model, rate limit eller overbelastning skelnes |
+| Vibe-Trading installeret | `requirements.txt` kan stadig installeres, og `vibe-trading-ai` kan importeres |
+| EODHD-nøgle | datatjekkets EODHD-kald lykkes |
+| Datatjek | `PASS` = ok, `ADVARSEL` = advarsel, `FEJL` = fejl |
+| Regnskabsdatoer | hver aktie har en dato fra mindst én kilde |
+| FRED, Makro EU/Norden | nøgle og kalender svarer (ingen FRED-nøgle = advarsel, ikke fejl) |
+| Runner-opstart | plan lagt og tørkørsels-motor startet |
+| Kryptering og push | kuverten krypteres, verificeres og pushes til `main` (push-trinnet tester GitHub-tokenet) |
+
+Status: **ok** (alle grønne), **warn** (mindst én advarsel) eller **fail** (mindst ét rødt tjek). Ved *fail* får kørslen status `failed`, workflowet bliver rødt, og GitHub sender den sædvanlige fejlmail til den, der sidst ændrede workflowet. Kanariefuglen kører uanset `VT_SCHEDULE` og uanset, om ugen allerede er kørt.
+
+Den skriver kun `results/canary.json` (offentligt: status, de enkelte tjek med noter uden porteføljedata, varighed, 30 dages historik) og den fulde kuvert til `results/canary/latest.enc.json`. Den rører aldrig `index.json`, `ledger.json` eller `latest.enc.json`, så ugerapporterne i Vibetrad forbliver rene. Synkroniseringen (den planlagte Claude-opgave 07:40/19:40) kopierer `canary.json` ind i Vibetrad, der viser den som trin 0 i kæden under Ugerapport med alle tjek, og advarer, hvis der ikke har været en kanariefugl i 30 timer. Kommit-beskeden er `Kanariefugl DD/MM/YYYY (ok|partial|failed)`. En manuel kanariefugl: `VT_CANARY=true python runner/run_week.py --event schedule --results results` (kræver secrets i miljøet).
+
 ## Udvikling
 
 ```bash
 pip install "cryptography>=42" pyyaml pytest pandas
-python -m pytest -q                      # 225 tests (integrationstestene for EODHD og Vibe-Trading-rettelserne kører kun, hvor vibe-trading-ai er installeret)
+python -m pytest -q                      # 240 tests (integrationstestene for EODHD og Vibe-Trading-rettelserne kører kun, hvor vibe-trading-ai er installeret)
 node tests/decrypt_webcrypto.mjs results/latest.enc.json 'adgangsfrase'   # dekrypterer en kuvert med WebCrypto præcis som Vibetrad-siden (testene bruger den, når node findes)
 VT_PORTFOLIO="$(cat runner/portfolio.example.json)" VT_RESULTS_PASSPHRASE=0123456789abcdef \
   python runner/run_week.py --dry-run --event workflow_dispatch --results /tmp/vt-results

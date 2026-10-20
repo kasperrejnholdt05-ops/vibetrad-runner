@@ -3,7 +3,8 @@
 
 Kører i GitHub Actions på knaptryk (se .github/workflows/vibetrad-weekly.yml). Flowet:
 
-1. Afgør om der skal køres (knaptryk kører altid; lørdagskørsel kun med VT_SCHEDULE=on).
+1. Afgør om der skal køres (knaptryk kører altid; lørdagskørsel kun med VT_SCHEDULE=on;
+   kanariefuglen – den daglige gratis tørkørsel i kanarie.py – kører hver nat).
 2. Læser porteføljen fra secret VT_PORTFOLIO (JSON, genereres af Vibetrad-siden).
 3. Kobler EODHD ind i Vibe-Trading og krydstjekker porteføljens kurser, valuta,
    regnskabsdatoer og værdi mellem Vibe-Tradings egne kilder og EODHD (datatjek.py).
@@ -45,6 +46,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 import datatjek as dtj  # noqa: E402  (krydstjek Vibe-Trading × EODHD)
 import eodhd as eo  # noqa: E402  (EODHD-klient og -integration i Vibe-Trading)
 import fred as fr  # noqa: E402  (FRED: nøgletjek og makro-facit)
+import kanarie as kn  # noqa: E402  (kanariefugl: daglig gratis tørkørsel af hele kæden)
 import makro as mk  # noqa: E402  (EODHD: centralbanker og statsrenter for Europa og Norden)
 
 STO = ZoneInfo("Europe/Stockholm")
@@ -429,8 +431,10 @@ def week_window(ref: dt.datetime) -> dict:
             "full": full, "label": label}
 
 
-def should_run(ref: dt.datetime, latest_meta: dict | None, event: str, force: bool) -> tuple[bool, str]:
+def should_run(ref: dt.datetime, latest_meta: dict | None, event: str, force: bool, canary: bool = False) -> tuple[bool, str]:
     week = week_window(ref)
+    if canary:  # den daglige tørkørsel kører altid, uanset ugedag og VT_SCHEDULE; den rører ikke ugerapporterne
+        return True, "kanariefugl (daglig gratis tørkørsel af hele kæden)"
     if force or event == "workflow_dispatch":
         return True, "manuel kørsel"
     if event == "schedule" and os.environ.get("VT_SCHEDULE", "off").strip().lower() != "on":
@@ -1763,11 +1767,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--force", action="store_true", default=os.environ.get("VT_FORCE", "") == "true")
     ap.add_argument("--force-risk", action="store_true", default=os.environ.get("VT_FORCE_RISK", "") == "true")
     ap.add_argument("--dry-run", action="store_true", default=os.environ.get("VT_DRY_RUN", "") == "true")
+    ap.add_argument("--canary", action="store_true", default=kn.env_flag(),
+                    help="kanariefugl: tørkørsel, der tester nøgler, Vibe-Trading, datakilder og kryptering (results/canary.json)")
     ap.add_argument("--now", default=os.environ.get("VT_NOW"))
     ap.add_argument("--gate-only", action="store_true", help="afgør kun om der skal køres (ingen secrets)")
     ap.add_argument("--merge-results", metavar="FIL",
                     help="læg en gemt kuvert (results/weeks/*.enc.json) ind i index, ledger og latest igen (push-konflikt)")
     args = ap.parse_args(argv)
+    if args.canary:
+        args.dry_run = True  # kanariefuglen bruger aldrig API-kredit
 
     con = Console()
     results = Path(args.results)
@@ -1776,7 +1784,10 @@ def main(argv: list[str] | None = None) -> int:
         try:
             envelope = json.loads(Path(args.merge_results).read_text("utf-8"))
             assert envelope.get("schema") == SCHEMA and envelope.get("public", {}).get("generated_at"), "ikke en resultat-kuvert"
-            write_results(results, envelope)
+            if kn.is_canary_envelope(envelope):
+                kn.write(results, envelope)
+            else:
+                write_results(results, envelope)
         except Exception as exc:  # noqa: BLE001
             con.say(f"FEJL: kuverten kunne ikke lægges ind ({type(exc).__name__}).")
             return 3
@@ -1785,7 +1796,7 @@ def main(argv: list[str] | None = None) -> int:
     ref = now_sto(args.now)
     week = week_window(ref)
 
-    ok, why = should_run(ref, read_latest_meta(results), args.event, args.force)
+    ok, why = should_run(ref, read_latest_meta(results), args.event, args.force, canary=args.canary)
     con.say(f"Stockholm {ref:%d/%m/%Y %H:%M} · {week['label']} · {'KØRER' if ok else 'springer over'}: {why}")
     if not ok or args.gate_only:
         set_output(ran="true" if ok else "false", status="gate" if ok else "skipped", week=week["id"])
@@ -1941,6 +1952,12 @@ def main(argv: list[str] | None = None) -> int:
     if runtime is None:
         con.say(f"FEJL ved opstart af Vibe-Trading ({errors[-1]['type']}). Detaljer ligger krypteret i rapporten.")
 
+    canary: dict | None = None
+    if args.canary:
+        canary = kn.summary(canary_checks(portfolio, datacheck, fred_snap, makro_snap, runtime is not None, vt_why))
+        for line in kn.console_lines(canary["checks"]):
+            con.say(line)
+
     used_usd = 0.0
     if not args.dry_run:
         silence_rest(log_path)  # Vibe-Tradings tråde (også efter en tidsgrænse) må aldrig nå den offentlige log
@@ -2005,6 +2022,8 @@ def main(argv: list[str] | None = None) -> int:
     done = [r for r in runs if r["status"] == "completed"]
     started_runs = [r for r in runs if r["status"] != "skipped"]
     status = "ok" if started_runs and len(done) == len(started_runs) else "partial" if done else "failed"
+    if canary:  # kanariefuglens status er tjekkene, ikke pladsholder-swarmene
+        status = kn.STATUS_TO_RUN[canary["status"]]
     tin = sum(r.get("tokens_in", 0) for r in runs)
     tout = sum(r.get("tokens_out", 0) for r in runs)
     generated = dt.datetime.now(STO).isoformat(timespec="seconds")
@@ -2042,10 +2061,12 @@ def main(argv: list[str] | None = None) -> int:
               "presets": [r["preset"] for r in done], "week_to": week["to"],
               "cost_usd": round(sum(r.get("est_cost_usd", 0) for r in runs), 2),
               "datacheck": datacheck["status"] if datacheck else "ikke kørt"}
+    if canary:
+        public["canary"] = {**canary, "duration_s": round(time.monotonic() - t0), "github_run_id": gh_run}
     try:
         envelope = fit_payload(payload, passphrase, public, iterations)
         assert decrypt(envelope, passphrase)["week"]["id"] == week["id"], "kryptering kunne ikke verificeres"
-        write_results(results, envelope)
+        result_file = kn.write(results, envelope) if canary else write_results(results, envelope)
     except Exception as exc:  # noqa: BLE001 - traceback går til den private log, ikke til GitHub
         traceback.print_exc()
         con.say(f"FEJL: resultatet kunne ikke krypteres eller skrives ({type(exc).__name__}).")
@@ -2053,9 +2074,51 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     kb = len(json.dumps(envelope)) / 1024
     con.say(f"Resultat: {status} · {len(done)}/{len(runs)} swarms · {tin + tout:,} tokens · {kb:.0f} KB krypteret".replace(",", " "))
-    set_output(ran="true", status=status, week=week["id"], run_id=run_id,
-               result_file=str(results / "weeks" / f"{run_id}.enc.json"))
+    if canary:
+        con.say(f"Kanariefugl: {canary['status']} · {canary['ok']} ok, {canary['warn']} advarsler, {canary['fail']} fejl · "
+                f"{round(time.monotonic() - t0)} s · results/canary.json")
+    set_output(ran="true", status=status, week=week["id"], run_id=run_id, day=kn.day_label(generated),
+               result_file=str(result_file or results / "weeks" / f"{run_id}.enc.json"))
     return 0
+
+
+def canary_checks(portfolio: dict, datacheck: dict | None, fred_snap: dict | None, makro_snap: dict | None,
+                  runtime_ok: bool, vt_why: str = "") -> list[dict]:
+    """Kanariefuglens tjek. Noterne må aldrig indeholde porteføljedata: kun status, antal og tekst om kilderne."""
+    checks = [kn.check("secrets", "Secrets", True, "VT_RESULTS_PASSPHRASE og VT_PORTFOLIO kunne læses")]
+    checks.append(kn.check("anthropic", "Anthropic-nøgle og model",
+                           **kn.anthropic_probe(os.environ.get("LANGCHAIN_MODEL_NAME", ""), os.environ.get("ANTHROPIC_API_KEY", ""))))
+    checks.append(kn.check("vibe_trading", "Vibe-Trading installeret", **kn.vibe_trading_probe()))
+    if datacheck:
+        s, c = datacheck["sources"], datacheck["counts"]
+        eod = s["eodhd"]
+        acc = eod.get("account") or {}
+        if not eod["available"]:
+            checks.append(kn.check("eodhd", "EODHD-nøgle", False, "secret EODHD_API_KEY mangler"))
+        elif acc and not acc.get("ok") and not eod["calls"]:
+            checks.append(kn.check("eodhd", "EODHD-nøgle", False, "nøglen virker ikke" + (" (HTTP 401)" if "401" in str(acc.get("error")) else "")))
+        else:
+            checks.append(kn.check("eodhd", "EODHD-nøgle", True, f"nøglen virker ({eod['calls']} kald)"))
+        st = datacheck["status"]
+        checks.append(kn.check("datatjek", "Datatjek", True if st == "PASS" else None if st == "ADVARSEL" else False,
+                               f"{st} · {c['ok']} ok, {c['warn']} advarsler, {c['fail']} fejl"
+                               + (f" · Vibe-Trading {vt_why}" if vt_why else "")))
+        stocks = {h["ticker"] for h in portfolio["holdings"] if h["kind"] not in ("cash", "fund", "etf")}
+        found = {e["ticker"] for e in datacheck.get("earnings", []) if e.get("verified")}
+        missing = len(stocks - found)
+        checks.append(kn.check("regnskab", "Regnskabsdatoer", True if not missing else None,
+                               "fundet for alle aktier" if not missing else f"mangler for {missing} aktie(r)"))
+    else:
+        checks.append(kn.check("datatjek", "Datatjek", False, "kunne ikke gennemføres (detaljer krypteret i kuverten)"))
+    if fred_snap and fred_snap.get("key"):
+        checks.append(kn.check("fred", "FRED", bool(fred_snap.get("ok")), fr.status_line(fred_snap)))
+    else:
+        checks.append(kn.check("fred", "FRED", None, fr.status_line(fred_snap)))
+    if makro_snap is not None:
+        checks.append(kn.check("makro", "Makro EU/Norden (EODHD)", bool(makro_snap.get("ok")), mk.status_line(makro_snap)))
+    checks.append(kn.check("runtime", "Runner-opstart", runtime_ok, "plan lagt og tørkørsels-motor startet" if runtime_ok
+                           else "opstart fejlede (detaljer krypteret i kuverten)"))
+    return checks
 
 
 def _frames(tb: Any, limit: int = 6) -> str:

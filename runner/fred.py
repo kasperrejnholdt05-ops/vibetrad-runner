@@ -39,6 +39,10 @@ SERIES: tuple[tuple[str, str, str, int], ...] = (
     ("DEXSDUS", "USD/SEK (Fed H.10, ugentlig – kun makrokontekst, ikke til omregning)", "SEK", 16),  # H.10 udgives ugentligt
 )
 HEADLINE = "DGS10"
+# Buffett-indikatoren: markedsværdien af amerikanske ikke-finansielle selskabers aktier (Fed Z.1, FRED NCBEILQ027S,
+# mio. USD, kvartal) delt med nominelt BNP (FRED GDP, mia. USD, kvartal, sæsonkorrigeret årsrate). Wilshire 5000-serien
+# på FRED er udgået (2024), så Z.1-serien er den vedligeholdte tæller. Vises med 10 års kontekst, aldrig som timing-signal.
+BUFFETT_EQUITY, BUFFETT_GDP, BUFFETT_YEARS = "NCBEILQ027S", "GDP", 10
 
 
 def api_key() -> str:
@@ -182,12 +186,41 @@ def snapshot(ref_day: str, client: FredClient | None = None, *, window_days: int
         out["series"].append(row)
         if c.dead or c.net_fails >= 2:  # afvist nøgle eller nedbrud: ingen grund til at prøve resten
             break
+    out["buffett"] = None
+    if not c.dead and c.net_fails < 2:
+        try:  # to ekstra kald; 11 års kvartalsdata, så 10 års kontekst altid er fuld
+            start_q = (dt.date.fromisoformat(ref_day) - dt.timedelta(days=365 * (BUFFETT_YEARS + 1))).isoformat()
+            out["buffett"] = buffett_ratio(c.observations(BUFFETT_EQUITY, start_q, ref_day),
+                                           c.observations(BUFFETT_GDP, start_q, ref_day), ref_day)
+        except FredError as exc:
+            out["buffett_error"] = str(exc)
     out["calls"] = c.calls
     got = [r for r in out["series"] if r.get("value") is not None]
     out["ok"] = bool(got) and not c.dead
     if c.errors:
         out["error"] = c.errors[0] if not got or c.dead else f"{len(c.errors)} serie(r) fejlede: {c.errors[0]}"
     return out
+
+
+def buffett_ratio(equity: list[tuple[str, float]], gdp: list[tuple[str, float]], ref_day: str,
+                  years: int = BUFFETT_YEARS) -> dict | None:
+    """Kvartalsvis markedsværdi/BNP i procent med 10 års kontekst. Begge serier dateres på kvartalets første dag."""
+    g = {d: v for d, v in gdp if v}
+    rows = [(d, v / (g[d] * 1000.0) * 100.0) for d, v in equity if d in g and d <= ref_day]
+    if not rows:
+        return None
+    rows.sort()
+    latest_d, latest = rows[-1]
+    ld = dt.date.fromisoformat(latest_d)
+    since = ld.replace(year=ld.year - years).isoformat()  # samme kvartal for ``years`` år siden, inkl.
+    hist = [r for d, r in rows if d >= since]
+    prev = rows[-2][1] if len(rows) > 1 else None
+    below = sum(1 for r in hist if r < latest)
+    q = (dt.date.fromisoformat(latest_d).month - 1) // 3 + 1
+    return {"value": round(latest, 1), "date": latest_d, "quarter": f"Q{q} {latest_d[:4]}",
+            "prev": round(prev, 1) if prev is not None else None, "avg": round(sum(hist) / len(hist), 1),
+            "min": round(min(hist), 1), "max": round(max(hist), 1), "percentile": round(100 * below / max(1, len(hist) - 1)),
+            "years": years, "quarters": len(hist)}
 
 
 def _nf(v: float | None, d: int = 2) -> str:
@@ -228,8 +261,10 @@ def status_line(snap: dict | None) -> str:
     head = next((r for r in snap["series"] if r["id"] == HEADLINE and r.get("value") is not None),
                 next(r for r in snap["series"] if r.get("value") is not None))
     n = sum(1 for r in snap["series"] if r.get("value") is not None)
+    b = snap.get("buffett")
+    buf = f" · Buffett-indikator {_nf(b['value'], 0)} % ({b['quarter']})" if b else ""
     return (f"FRED: ja, nøglen virker ({n} af {len(SERIES)} serier, {snap.get('calls', 0)} kald · "
-            f"{head['name']} {_fmt(head)} pr. {_dmy(head['date'])})")
+            f"{head['name']} {_fmt(head)} pr. {_dmy(head['date'])}{buf})")
 
 
 def agent_brief(snap: dict | None) -> str:
@@ -245,4 +280,17 @@ def agent_brief(snap: dict | None) -> str:
     for r in rows:
         stale = " (forældet)" if r.get("stale") else ""
         lines.append(f"| {r['name']} ({r['id']}) | {_fmt(r)} | {_dmy(r['date'])}{stale} | {_chg(r)} |")
-    return "\n".join(lines)
+    lines.append(buffett_line(snap.get("buffett")))
+    return "\n".join(l for l in lines if l is not None)
+
+
+def buffett_line(b: dict | None) -> str | None:
+    """Én linje om Buffett-indikatoren til facit; None, når den ikke blev hentet."""
+    if not b:
+        return None
+    level = ("over" if b["value"] > b["avg"] else "under") + f" {b['years']}-års gennemsnittet"
+    return (f"\nBuffett-indikator (amerikanske ikke-finansielle selskabers aktier / BNP, Fed Z.1 + BEA): {_nf(b['value'], 0)} % "
+            f"pr. {b['quarter']}" + (f" (forrige kvartal {_nf(b['prev'], 0)} %)" if b.get("prev") is not None else "")
+            + f"; {b['years']}-års gennemsnit {_nf(b['avg'], 0)} %, interval {_nf(b['min'], 0)}–{_nf(b['max'], 0)} %, "
+            f"percentil {b['percentile']} – {level}. Brug den som kontekst for amerikansk værdiansættelse (højt tal = dyrt "
+            "marked i forhold til økonomien), aldrig som timing-signal; den siger intet om enkeltaktier.")
