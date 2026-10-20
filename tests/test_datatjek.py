@@ -51,6 +51,10 @@ class Fake:
     def actions(self, code, start):
         return self._act.get(code, [])
 
+    def news(self, code, *, start=None, limit=50, **_):
+        self.news_calls = getattr(self, "news_calls", 0) + 1
+        return list(getattr(self, "_news", {}).get(code, []))
+
 
 def sources(**over):
     px = {c: series(c) for c in BASE}
@@ -481,7 +485,8 @@ def test_tied_report_dates_pick_the_earliest_not_eodhd():
     dc = dtj.run(p, WEEK, REF, vt=vt, eod=eod)
     s = _spcx(dc)
     assert s["verified"] == "2026-10-20" and s["alternatives"] == ["2026-11-03"] and s["agree"] == 1
-    assert s["status"] == "warn" and any("uenighed: den tidligste dato er valgt" in n for n in s["notes"])
+    # SpaceX er noteret 12/06/2026: EODHD's kalender er et skabelon-estimat, og det står i begrundelsen
+    assert s["status"] == "warn" and any("EODHD-kalenderen er et estimat for et nyligt noteret selskab" in n for n in s["notes"])
     assert dtj.alternative_reports(dc) == {"SPCX.US": ["2026-11-03"]}
     b = dtj.agent_brief(dc)
     assert "| 20/10/2026 (1 kilde; anden kilde: 03/11/2026) |" in b  # "efter lukning" hører til EODHD's 03/11
@@ -495,6 +500,54 @@ def test_tied_report_dates_pick_the_earliest_not_eodhd():
     desk = next(s for s in plan if s["preset"] == "earnings_research_desk" and s["context"]["ticker"] == "SPCX.US")
     assert "regnskab 20/10/2026; kilderne er uenige: en anden kilde siger 03/11/2026" in desk["vars"]["target"]
     assert desk["reason"].startswith("Regnskab 20/10/2026 (eller 03/11/2026)")
+
+
+def test_company_announcement_in_news_beats_two_calendar_estimates():
+    """EODHD og Yahoo sagde begge 03/11 for SpaceX, men selskabet havde selv meldt 20/10 i en pressemeddelelse,
+    der lå i EODHD's nyhedsstrøm. Meddelelsen tæller som bekræftet kilde og vinder uafgjort mod estimaterne;
+    ved 2 mod 1 vinder flertallet stadig, men meddelelsen står som anden kilde, så regnskabsteamet kører."""
+    p = rw.load_portfolio(json.dumps(dict(json.loads(RAW_P), next_reports_source={"SPCX.US": "eodhd"})))
+    vt_prof = {"SPCX.US": {"earnings_dates": ["2026-11-03"], "earnings_estimate": True}}
+    vt, eod = sources(vt_prof=vt_prof)
+    eod._news = {"SPCX.US": [
+        {"date": "2026-10-16T14:24:00+00:00", "title": "SpaceX to Post Third Quarter 2026 Results and Host Webcast on October 20, 2026",
+         "symbols": ["SPCX.US"]},
+        {"date": "2026-10-18T09:00:00+00:00", "title": "Meta and SpaceX report this week: Meta on Oct. 28",
+         "symbols": ["META.US", "SPCX.US", "TSLA.US"]},
+        {"date": "2026-10-17", "title": "Ex-dividend date Oct 21 for SPCX", "symbols": ["SPCX.US"]}]}
+    dc = dtj.run(p, WEEK, REF, vt=vt, eod=eod)
+    s = _spcx(dc)
+    assert s["news"] == "2026-10-20" and s["news_confirmed"] and s["news_title"].startswith("SpaceX to Post")
+    assert s["verified"] == "2026-11-03" and s["agree"] == 2 and s["alternatives"] == ["2026-10-20"]
+    assert any(n.startswith("nyhed 16/10/2026: SpaceX to Post") for n in s["notes"])
+    assert eod.news_calls == 3  # én nyhedsforespørgsel pr. aktie, ingen for ETF'er
+    assert "anden kilde: 20/10/2026" in dtj.agent_brief(dc)
+    assert dtj.alternative_reports(dc) == {"SPCX.US": ["2026-10-20"]}
+    # Uden Yahoos estimat står det 1-1, og selskabets meddelelse er bekræftet: den vinder
+    vt2, eod2 = sources(vt_prof={"SPCX.US": {"earnings_dates": []}})
+    eod2._news = eod._news
+    s2 = _spcx(dtj.run(p, WEEK, REF, vt=vt2, eod=eod2))
+    assert s2["verified"] == "2026-10-20" and s2["confirmed"] and s2["alternatives"] == ["2026-11-03"]
+    assert any("valgt 20/10/2026: bekræftet dato" in n for n in s2["notes"])
+
+
+def test_earnings_date_from_news_parses_english_danish_swedish_and_rolls_the_year():
+    f = dtj.earnings_date_from_news
+    assert f([{"date": "2026-10-10", "title": "Nvidia sets Nov. 18 date for third-quarter results"}], "2026-10-19")["date"] == "2026-11-18"
+    assert f([{"date": "2026-10-01", "title": "Novo Nordisk offentliggør regnskab for 3. kvartal den 4. november 2026"}], "2026-10-19")["date"] == "2026-11-04"
+    r = f([{"date": "2026-10-02", "title": "Investor AB: Delårsrapport januari–september 2026 publiceras den 17 oktober"}], "2026-10-05")
+    assert r["date"] == "2026-10-17" and r["confirmed"]
+    assert f([{"date": "2026-12-20", "title": "Acme to report fourth quarter results on January 28"}], "2026-12-21")["date"] == "2027-01-28"
+    assert f([{"date": "2026-10-19", "title": "SpaceX surprises Wall Street with Oct. 20 earnings date"}], "2026-10-19")["confirmed"] is False
+    assert f([{"date": "2026-10-19", "title": "Earnings live updates: all eyes on Musk"}], "2026-10-19") is None  # ingen dato
+    assert f([{"date": "2026-10-19", "title": "Acme results on Oct. 10 were strong"}], "2026-10-19") is None  # fortid
+    assert f([{"date": "2026-10-19", "title": "Ex-dividend date Oct 21 for Acme"}], "2026-10-19") is None
+    # Flere selskaber i én overskrift: kun hvis vores selskab er emnet (første to ord)
+    N = dtj.name_words("SpaceX (Space Exploration Technologies)") | {"spcx"}
+    multi = [{"date": "2026-10-19", "title": "Meta and SpaceX report this week: Meta on Oct. 28", "symbols": ["META.US", "SPCX.US", "TSLA.US"]}]
+    assert f(multi, "2026-10-19", names=N) is None
+    assert f(multi, "2026-10-19", names=dtj.name_words("Meta Platforms"))["date"] == "2026-10-28"
+    assert dtj.name_words("Alphabet A") == {"alphabet", "google"} and dtj.name_words("Novo Nordisk A/S") == {"novo", "nordisk"}
 
 
 def test_confirmed_dates_win_ties_and_majority_still_wins():
@@ -578,3 +631,60 @@ def test_yahoo_window_that_straddles_today_never_yields_a_past_date():
     s = next(e for e in dtj.run(p, WEEK, REF, vt=vt, eod=eod)["earnings"] if e["ticker"] == "SPCX.US")
     assert s["verified"] == "2026-10-15" and s["status"] == "info"  # REF er 15/10
     assert [r["ticker"] for r in rw.upcoming_reports(p, REF, lookup=None, verified=dtj.verified_reports({"earnings": [s]}))] == ["SPCX.US"]
+
+
+def test_schedule_sentence_in_article_body_counts_as_confirmed():
+    """Kørslen 19/10/2026 kl. 18:43: overskriften "SpaceX Q3 earnings: Revenue seen surging …" nævnte ingen dato,
+    men brødteksten sagde "is scheduled to announce Q3 earnings results on Tuesday, October 20th, after market close".
+    Før blev kun overskrifter læst, og EODHD's 03/11 blev stående som "anden kilde"."""
+    f = dtj.earnings_date_from_news
+    N = dtj.name_words("SpaceX (Space Exploration Technologies)") | {"spcx"}
+    art = {"date": "2026-10-19T02:39:00+00:00", "title": "SpaceX Q3 earnings: Revenue seen surging to $13B", "symbols": ["SPCX.US", "TSLA.US", "NFLX.US"],
+           "content": "SpaceX (SPCX) is scheduled to announce Q3 earnings results on Tuesday, October 20th, after market close. "
+                      "Analysts expect revenue of $13B. Netflix also reports on Tuesday, October 20th."}
+    r = f([art], "2026-10-19", 45, names=N)
+    assert r["date"] == "2026-10-20" and r["confirmed"] and "scheduled to announce" in r["title"]
+    # Sætningen skal handle om selskabet: Netflix' sætning tæller ikke for SpaceX, og uden navneord ignoreres teksten
+    only_nflx = {**art, "content": "Netflix is scheduled to announce Q3 earnings results on Tuesday, October 20th."}
+    assert f([only_nflx], "2026-10-19", 45, names=N) is None
+    # Udbytte/lock-up-sætninger ignoreres
+    lock = {**art, "content": "SpaceX's lock-up is scheduled to expire on December 9 after the results."}
+    assert f([lock], "2026-10-19", 45, names=N) is None
+
+
+def test_fresh_dated_news_beats_the_calendar_estimate_for_a_new_listing():
+    """SpaceX 19/10/2026: EODHD-kalenderen sagde 03/11 (skabelon-estimat for et selskab noteret 12/06), Yahoo intet,
+    nyhederne 20/10 (omtale, ikke selskabets meddelelse). 1-1 ved uafgjort: nyheden fra de seneste 21 dage vinder."""
+    p = rw.load_portfolio(json.dumps(dict(json.loads(RAW_P), next_reports_source={"SPCX.US": "eodhd"})))
+    vt, eod = sources(vt_prof={"SPCX.US": {"earnings_dates": []}})
+    eod._news = {"SPCX.US": [{"date": "2026-10-19T12:30:00+00:00", "symbols": ["SPCX.US", "TSLA.US", "APO.US"],
+                              "title": "SpaceX surprises Wall Street with Oct. 20 earnings date — here's why"}]}
+    s = _spcx(dtj.run(p, WEEK, REF, vt=vt, eod=eod))
+    assert s["verified"] == "2026-10-20" and not s["confirmed"] and s["alternatives"] == ["2026-11-03"]
+    assert s["eodhd_estimate"] is True and s["news_scanned"] == 1 and s["news_error"] is None
+    assert any("nyhed fra de seneste 21 dage" in n for n in s["notes"])
+    # En gammel omtale (over 21 dage) er ikke "frisk", men for et nyligt noteret selskab taber kalenderen stadig
+    eod2 = sources(vt_prof={"SPCX.US": {"earnings_dates": []}})[1]
+    eod2._news = {"SPCX.US": [{"date": "2026-09-01", "symbols": ["SPCX.US"], "title": "SpaceX earnings expected Nov. 12 this year"}]}
+    s2 = _spcx(dtj.run(p, WEEK, REF, vt=vt, eod=eod2))
+    assert s2["verified"] == "2026-11-12" and s2["alternatives"] == ["2026-11-03"]
+    assert any("estimat for et nyligt noteret selskab" in n for n in s2["notes"])
+    # For et etableret selskab (ingen IPO-dato) gælder "tidligste dato" ved ægte uafgjort
+    vt3, eod3 = sources(vt_prof={"GOOGL.US": {"earnings_dates": []}})
+    eod3._news = {"GOOGL.US": [{"date": "2026-09-01", "symbols": ["GOOGL.US"], "title": "Alphabet earnings expected Nov. 5 this year"}]}
+    g = next(e for e in dtj.run(rw.load_portfolio(json.dumps(dict(json.loads(RAW_P), next_reports_source={"GOOGL.US": "eodhd"}))),
+                                WEEK, REF, vt=vt3, eod=eod3)["earnings"] if e["ticker"] == "GOOGL.US")
+    assert g["verified"] == "2026-10-28" and g["alternatives"] == ["2026-11-05"] and any("tidligste dato" in n for n in g["notes"])
+
+
+def test_news_fetch_failure_is_visible_in_the_row():
+    p = rw.load_portfolio(RAW_P)
+    vt, eod = sources()
+
+    def boom(code, **_):
+        raise RuntimeError("HTTP 500")
+
+    eod.news = boom
+    s = _spcx(dtj.run(p, WEEK, REF, vt=vt, eod=eod))
+    assert s["news_error"] == "RuntimeError" and s["news_scanned"] is None
+    assert any(n.startswith("nyheder kunne ikke hentes") for n in s["notes"])

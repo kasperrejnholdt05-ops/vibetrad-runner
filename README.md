@@ -38,6 +38,7 @@ Før agenterne starter, henter `runner/datatjek.py` de samme tal fra to uafhæng
 | **Porteføljen** | Regnskabsdatoer | `next_reports` og noter på overvågningslisten i `VT_PORTFOLIO` ("Regnskab 04/11" uden år betyder næste gang datoen kommer). `next_reports_source` siger, hvor datoen kommer fra; en dato, Vibetrad har hentet fra EODHD, tæller ikke som egen kilde, når EODHD selv svarer |
 | **Porteføljen** | Opgørelsesdato | `as_of` i `VT_PORTFOLIO`: ADVARSEL, når den er over 7 dage gammel |
 | **EODHD** | Kort kurshistorik | IPO-dato under et år siden: antal handelsdage og største fald fra top til bund kommer i agenternes facit, så risikotal for papiret omtales som usikre |
+| **Nyheder (EODHD)** | Regnskabsdato fra selskabets egen meddelelse | Overskrifter fra de seneste 45 dage scannes for regnskabsord og en dato på engelsk, dansk og svensk ("SpaceX to Post Third Quarter 2026 Results … on October 20, 2026", "Novo Nordisk offentliggør regnskab … den 4. november", "Delårsrapport … publiceras den 17 oktober"). Selskabet skal være overskriftens emne, så "Meta and SpaceX report this week: Meta on Oct. 28" ikke giver SpaceX Metas dato. En meddelelses-ordlyd (to post/report, sets, announces, publiceras, offentliggør) tæller som bekræftet kilde på linje med en dato skrevet ind i Vibetrad. (19/10/2026: EODHD's kalender sagde 03/11 for SpaceX, mens selskabet selv havde meldt 20/10 i en pressemeddelelse, som lå i EODHD's nyhedsstrøm.) |
 
 | Kontrol | PASS | ADVARSEL | FEJL |
 |---|---|---|---|
@@ -54,7 +55,7 @@ Før agenterne starter, henter `runner/datatjek.py` de samme tal fra to uafhæng
 
 Der sammenlignes på seneste afsluttede handelsdag (Yahoo leverer også dagens ufærdige bar, EODHD ikke). Yahoo daterer valutakurser en dag for tidligt (UTC-tidsstempel ved London-midnat): det opdages og justeres automatisk, og porteføljens værdi regnes for begge kilder med samme valutakurs, så kun kursforskelle tæller. Yahoos regnskabsvindue (fx 26/10–30/10, når datoen ikke er bekræftet) tæller som enigt, hvis facit ligger i vinduet. London-kurser fra EODHD i pence omregnes til pund. Mangler antal for en beholdning, beregnes vægtene ikke, og det står som ADVARSEL.
 
-**Regnskabsdato ved uenighed.** Flest kilder vinder, og datoer højst 1 dag fra hinanden tæller som enige (EODHD og Yahoo daterer ofte i hver sin tidszone). Står det lige, vinder en bekræftet dato: Yahoo siger eksplicit "ikke et estimat", eller datoen er skrevet ind i Vibetrad (`next_reports_source: "manuel"`, typisk fra selskabets IR-side). Ellers vinder den tidligste dato: hellere forberedt for tidligt end overrasket. De andre datoer står i facit ("anden kilde: 03/11/2026") og i `alternatives`. Ligger facit uden for de 14 dage, men en anden kilde siger en dato inden for, kører regnskabsteamet alligevel, og dets mål siger, at kilderne er uenige, og at datoen skal bekræftes på selskabets investor-side. (Indtil 19/10/2026 vandt EODHD ved uafgjort. Derfor fik SpaceX EODHD's estimat 03/11 i stedet for den rigtige dato 20/10, og regnskabsteamet kørte ikke.)
+**Regnskabsdato ved uenighed.** Flest kilder vinder, og datoer højst 1 dag fra hinanden tæller som enige (EODHD og Yahoo daterer ofte i hver sin tidszone). Står det lige, vinder en bekræftet dato: Yahoo siger eksplicit "ikke et estimat", datoen er skrevet ind i Vibetrad (`next_reports_source: "manuel"`, typisk fra selskabets IR-side), eller selskabets egen meddelelse står i nyhederne. Dernæst vinder en dateret nyhedsomtale fra de seneste 21 dage over EODHD-kalenderen, som er et estimat (for selskaber noteret inden for et år et skabelon-estimat, mærket `eodhd_estimate`). Ellers vinder den tidligste dato: hellere forberedt for tidligt end overrasket. Nyhederne læses dybt: op til 200 artikler fra 45 dage, både overskrift og brødtekst ("is scheduled to announce Q3 earnings results on Tuesday, October 20th" tæller som bekræftet); antallet læste artikler og en evt. hentefejl står i rækken (`news_scanned`, `news_error`), så et hul kan ses. (Kørslen 19/10/2026 kl. 18:43: EODHD sagde 03/11 for SpaceX, nyhederne havde haft 20/10 hele dagen, men kun 50 overskrifter blev læst, og den rigtige dato kom kun med, fordi Yahoo og din egen dato slog EODHD.) De andre datoer står i facit ("anden kilde: 03/11/2026") og i `alternatives`. Ligger facit uden for de 14 dage, men en anden kilde siger en dato inden for, kører regnskabsteamet alligevel, og dets mål siger, at kilderne er uenige, og at datoen skal bekræftes på selskabets investor-side. (Indtil 19/10/2026 vandt EODHD ved uafgjort. Derfor fik SpaceX EODHD's estimat 03/11 i stedet for den rigtige dato 20/10, og regnskabsteamet kørte ikke.)
 
 Begivenheder, der ikke er datafejl, vises for sig: estimeret udløb af lock-up for nyligt børsnoterede selskaber (IPO + 180 dage, fx SpaceX ca. 09/12/2026) samt udbytter og splits.
 
@@ -84,6 +85,8 @@ python tools/vt_med_eodhd.py tjek --portfolio-file ~/portefolje.json   # samme J
 
 Nøglen fjernes fra alle fejlbeskeder og logs. En afvist nøgle (HTTP 401) stopper EODHD for resten af kørslen. Et endpoint, abonnementet ikke dækker (HTTP 403), springes over, mens resten virker. Efter 4 mislykkede kald i træk holdes 5 minutters pause, så et nedbrud ikke koster minutter. Vibe-Trading bevarer EODHD som US-reserve, også hvis kilderækkefølgen ændres i web-UI'ets Settings (medmindre du selv har valgt rækkefølgen for US-aktier).
 
+**EODHD-dækning pr. marked** (står også i agenternes instruks): kurser, valuta, fundamentals og regnskabskalender dækker US, Europa og Norden; nyheder og daglig sentiment er rige for amerikanske papirer og tynde for nordiske/europæiske (få artikler, ofte ingen sentiment-score); analytikernes revisioner (`earnings_trends`) dækker US og store europæiske selskaber. `get_eodhd_data` har derfor fået `news` med `query` (søgeord i overskrift og tekst, op til 50 artikler), `sentiment` og `earnings_trends`, mens insider-handler ikke tilbydes (EODHD's feed er måneder bagud; agenterne bruger `get_sec_filings` for Form 4) og optioner heller ikke (handles ikke på kontoen).
+
 **Ekstra Vibe-Trading-værktøjer pr. team** (tilføjet ud over presets): regnskabsdesken får `get_stock_profile`, `get_sec_filings`, `get_financial_statements` og `get_stock_news`. Makro-desken, risikoudvalgets regime-agent og CIO'en får `get_macro_series` (FRED, kræver gratis `FRED_API_KEY`). Sentiment får `get_stock_news`, `sentiment` og `web_search`. Værdi-, fundamental- og investeringskomitéen får `get_stock_profile`/`get_sec_filings`/`get_fundamentals`. ETF-desken og CIO'en får `etf_holdings` (overlap mellem fonde og enkeltaktier). Alle data-agenter får `get_eodhd_data`. Værktøjer, der kræver en nøgle, tilføjes kun, når nøglen findes.
 
 **I codespacet:**
@@ -94,6 +97,10 @@ python ~/vibetrad-runner/tools/vt_med_eodhd.py nøgle                  # virker 
 claude mcp add vibe-trading -- python ~/vibetrad-runner/tools/vt_med_eodhd.py mcp   # Claude Code
 ```
 Nøglen gives som Codespaces-secret `EODHD_API_KEY` (github.com → Settings → Codespaces → Secrets, med adgang til codespacets repo, og genstart codespacet). Alternativt gemmes den i en fil, kun du kan læse: `read -rs -p 'EODHD-nøgle: ' K && mkdir -p ~/.config/vibetrad && printf %s "$K" > ~/.config/vibetrad/eodhd_key && chmod 600 ~/.config/vibetrad/eodhd_key && unset K && echo` (nøglen vises ikke, mens du indsætter den).
+
+## Makro for Europa og Norden (EODHD)
+
+FRED dækker kun USA, og investoren handler i SEK, DKK og EUR. `runner/makro.py` henter før agenterne starter Riksbankens, Nationalbankens, ECB's og Feds seneste rentebeslutning og næste rentemøde (med markedets forventning), seneste inflation (CPIF for Sverige), ledighed og BNP-vækst fra EODHD's økonomiske kalender samt 10-årige statsrenter for Sverige, Danmark og Tyskland (EODHD GBOND-serier). Omkring 10 EODHD-kald, ingen LLM-kald. Tabellen "Makro (Europa og Norden, EODHD)" står i alle agenters instruks ved siden af FRED-tabellen, i rapporten (`makro_eu`) og i Vibetrad under Datatjek. GitHub-loggen viser fx `Makro EU/Norden: ja (Riksbanken 1,75 % → 04/11/2026 · …)`. Fejler kalenderen for et land, står det i tabellen, og kørslen fortsætter.
 
 ## FRED (makrotal fra St. Louis Fed)
 
@@ -247,7 +254,7 @@ Opdatér `VT_PORTFOLIO` (Kopiér VT_PORTFOLIO i Vibetrad → `gh secret set VT_P
 
 ```bash
 pip install "cryptography>=42" pyyaml pytest pandas
-python -m pytest -q                      # 215 tests (integrationstestene for EODHD og Vibe-Trading-rettelserne kører kun, hvor vibe-trading-ai er installeret)
+python -m pytest -q                      # 225 tests (integrationstestene for EODHD og Vibe-Trading-rettelserne kører kun, hvor vibe-trading-ai er installeret)
 node tests/decrypt_webcrypto.mjs results/latest.enc.json 'adgangsfrase'   # dekrypterer en kuvert med WebCrypto præcis som Vibetrad-siden (testene bruger den, når node findes)
 VT_PORTFOLIO="$(cat runner/portfolio.example.json)" VT_RESULTS_PASSPHRASE=0123456789abcdef \
   python runner/run_week.py --dry-run --event workflow_dispatch --results /tmp/vt-results

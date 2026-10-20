@@ -263,16 +263,29 @@ class EodhdClient:
     def news(self, symbol: str | None = None, *, tag: str | None = None, start: str | None = None,
              end: str | None = None, limit: int = 10) -> list[dict]:
         data = self._get("news", {"s": to_eodhd(symbol) if symbol else None, "t": tag, "from": start, "to": end,
-                                  "limit": max(1, min(int(limit), 50)), "offset": 0}, weight=5)
+                                  "limit": max(1, min(int(limit), 1000)), "offset": 0}, weight=5)
         return data if isinstance(data, list) else []
 
     def macro(self, country_iso3: str, indicator: str) -> list[dict]:
         data = self._get(f"macro-indicator/{country_iso3.upper()}", {"indicator": indicator})
         return data if isinstance(data, list) else []
 
-    def economic_events(self, country_iso2: str | None, start: str, end: str, limit: int = 50) -> list[dict]:
-        data = self._get("economic-events", {"country": country_iso2, "from": start, "to": end,
+    def economic_events(self, country_iso2: str | None, start: str, end: str, limit: int = 50,
+                        event_type: str | None = None) -> list[dict]:
+        data = self._get("economic-events", {"country": country_iso2, "from": start, "to": end, "type": event_type,
                                              "limit": max(1, min(int(limit), 200))})
+        return data if isinstance(data, list) else []
+
+    def sentiment(self, symbols: list[str], start: str | None = None, end: str | None = None) -> dict:
+        """Daglig nyhedsstemning pr. symbol (EODHD /sentiments). Tynd for nordiske aktier."""
+        data = self._get("sentiments", {"s": ",".join(to_eodhd(s) for s in symbols if s), "from": start, "to": end})
+        return data if isinstance(data, dict) else {}
+
+    def earnings_trends(self, symbols: list[str]) -> list[dict]:
+        """Analytikernes EPS-/omsætningsestimater og revisioner (EODHD /calendar/trends, vægt 10)."""
+        data = self._get("calendar/trends", {"symbols": ",".join(to_eodhd(s) for s in symbols if s)}, weight=10)
+        if isinstance(data, dict):
+            data = data.get("trends") or []
         return data if isinstance(data, list) else []
 
     def user(self) -> dict:
@@ -377,11 +390,16 @@ TOOL_DESCRIPTION = (
     "quote (symbols: delayed live price), eod (symbol, start, end: daily OHLC with adjusted close), "
     "fundamentals (symbol: name, currency, sector, IPO date, market cap, P/E, EPS estimates, analyst target, shares), "
     "earnings_calendar (symbols, start, end: report dates, BMO/AMC, EPS estimate), "
-    "news (symbol or tag, start: headlines with sentiment polarity), dividends / splits (symbol, start), "
+    "news (symbol or tag, start, limit up to 50, optional query = keyword filter on title/text, e.g. 'results' or "
+    "'earnings date': headlines with sentiment polarity and link), "
+    "sentiment (symbols, start, end: daily news sentiment score per symbol; thin for Nordic names), "
+    "earnings_trends (symbols: consensus EPS/revenue estimates with 7/30/90-day revisions), "
+    "dividends / splits (symbol, start), "
     "macro (country ISO-3 + indicator, e.g. SWE inflation_consumer_prices_annual, USA real_interest_rate), "
     "economic_events (country ISO-2 e.g. US/SE, start, end: Fed/Riksbank decisions, CPI etc.), "
     "screener (filters as EODHD JSON list, e.g. [[\"exchange\",\"=\",\"ST\"],[\"market_capitalization\",\">\",1e10]], "
-    "sort e.g. market_capitalization.desc, limit). Dates YYYY-MM-DD."
+    "sort e.g. market_capitalization.desc, limit). Dates YYYY-MM-DD. Not offered: insider transactions (EODHD's feed "
+    "lags months; use get_sec_filings for Form 4) and options (not tradable in this account)."
 )
 
 
@@ -411,10 +429,21 @@ def _tool_execute(client: EodhdClient, **kw: Any) -> str:
         elif action in ("earnings", "earnings_calendar"):
             data = client.earnings(syms, start, kw.get("end") or (today + dt.timedelta(days=120)).isoformat())
         elif action == "news":
+            query = str(kw.get("query") or "").strip().lower()
+            words = [w for w in re.split(r"[\s,;]+", query) if w]
+            items = client.news(sym, tag=kw.get("tag"), start=kw.get("start"), end=kw.get("end"),
+                                limit=int(kw.get("limit") or (50 if words else 10)))
+            if words:  # søgeord: alle ord skal findes i overskrift eller tekst
+                items = [n for n in items if all(w in (str(n.get("title") or "") + " " + str(n.get("content") or "")).lower()
+                                                 for w in words)]
             data = [{"date": n.get("date"), "title": n.get("title"), "symbols": (n.get("symbols") or [])[:8],
-                     "sentiment": n.get("sentiment"), "link": n.get("link")}
-                    for n in client.news(sym, tag=kw.get("tag"), start=kw.get("start"), end=kw.get("end"),
-                                         limit=int(kw.get("limit") or 10))]
+                     "sentiment": n.get("sentiment"), "link": n.get("link"),
+                     **({"snippet": str(n.get("content") or "")[:240]} if words else {})}
+                    for n in items[: int(kw.get("limit") or 10)]]
+        elif action == "sentiment":
+            data = client.sentiment(syms, kw.get("start"), kw.get("end"))
+        elif action == "earnings_trends":
+            data = client.earnings_trends(syms)[:12]
         elif action == "dividends":
             data = client.dividends(sym, kw.get("start"))[-40:]
         elif action == "splits":
@@ -441,13 +470,15 @@ def _tool_execute(client: EodhdClient, **kw: Any) -> str:
 TOOL_PARAMETERS = {
     "type": "object",
     "properties": {
-        "action": {"type": "string", "enum": ["quote", "eod", "fundamentals", "earnings_calendar", "news", "dividends",
-                                               "splits", "macro", "economic_events", "screener"]},
+        "action": {"type": "string", "enum": ["quote", "eod", "fundamentals", "earnings_calendar", "news", "sentiment",
+                                               "earnings_trends", "dividends", "splits", "macro", "economic_events",
+                                               "screener"]},
         "symbol": {"type": "string", "description": "e.g. NVDA.US, NOVO-B.CO, USDSEK.FOREX"},
         "symbols": {"type": "array", "items": {"type": "string"}},
         "start": {"type": "string", "description": "YYYY-MM-DD"},
         "end": {"type": "string", "description": "YYYY-MM-DD"},
         "tag": {"type": "string"},
+        "query": {"type": "string", "description": "news only: keywords that must all appear in the headline or text"},
         "country": {"type": "string"},
         "indicator": {"type": "string"},
         "filters": {"type": "array", "items": {"type": "array", "items": {}}},

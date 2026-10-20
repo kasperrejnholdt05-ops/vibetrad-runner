@@ -45,6 +45,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 import datatjek as dtj  # noqa: E402  (krydstjek Vibe-Trading × EODHD)
 import eodhd as eo  # noqa: E402  (EODHD-klient og -integration i Vibe-Trading)
 import fred as fr  # noqa: E402  (FRED: nøgletjek og makro-facit)
+import makro as mk  # noqa: E402  (EODHD: centralbanker og statsrenter for Europa og Norden)
 
 STO = ZoneInfo("Europe/Stockholm")
 SCHEMA = 1
@@ -113,6 +114,11 @@ calendar (Fed/Riksbank), government bond yields (US10Y.GBOND, SE10Y.GBOND), FX (
 European stocks. If two sources disagree by more than 1 %, report both numbers and the date.
 The `backtest` tool does not model Nordic/European markets in this Vibe-Trading version (it would treat them as China
 A-shares): never backtest such symbols; use their US listing/ETF or compute returns from `get_eodhd_data` eod data.
+EODHD coverage by market: prices, FX, fundamentals and the earnings calendar cover US, European and Nordic listings;
+news and daily sentiment are rich for US names and thin for Nordic/European ones (few articles, often no sentiment
+score); earnings_trends (analyst revisions) covers US and large European names. Use news with a query (e.g.
+'earnings date', 'guidance') to find a specific announcement. European and Nordic macro (Riksbanken, Nationalbanken,
+ECB, Fed, 10-year yields) is in the facit; economic_events gives the full calendar per country (SE, DK, EU, US).
 """
 FRED_GUIDANCE = """
 
@@ -142,6 +148,16 @@ China-listed funds only; use the US sibling as a look-through proxy for a UCITS 
 Never state a brokerage fee (courtage) or FX fee unless it is given in your instructions.
 Market capitalisation: use the whole-company figure from the Vibetrad facit. Never compute it from one share class's
 share count (Alphabet has A, B and C shares, so GOOGL alone is far too low).
+
+## Source rules (Vibetrad)
+- Report dates: the facit's verified date combines the company's own announcement (news), Yahoo and EODHD, and lists
+  the other dates. Never replace it with a single source; a calendar feed alone is often an estimate.
+- Insider transactions: `get_sec_filings` (Form 4) for US filers. Data-vendor insider feeds lag months.
+- `get_financial_statements` and `get_sec_filings` cover US filers only; Nordic and European statements come from
+  `get_eodhd_data` fundamentals when that tool is available.
+- Nordic/European news coverage in data feeds is thin: if you have `web_search`, search the company's own
+  investor-relations site and Nasdaq Nordic/Cision and cite the URL; otherwise say the news base is thin rather than
+  inferring sentiment from a few articles.
 """
 # Alle agenter får investorens rammer: ISK hos Nordnet som privatkunde (kørslen 19/10 anbefalede ACWI.US, som ikke kan købes)
 ISK_GUIDANCE = """
@@ -1876,6 +1892,17 @@ def main(argv: list[str] | None = None) -> int:
     con.say(fr.status_line(fred_snap))
     fred_ready = (bool(fred_snap.get("ok")) if fred_snap.get("key") else None) if fred_snap else None
 
+    # Europa og Norden: Riksbanken, Nationalbanken, ECB og Fed samt 10-årige statsrenter fra EODHD (FRED er kun USA).
+    makro_snap: dict | None = None
+    if eo.api_key():
+        with quiet_fds(log_path):
+            try:
+                makro_snap = mk.snapshot(eo.EodhdClient(), ref.date().isoformat())
+            except Exception as exc:  # noqa: BLE001 - makro må aldrig stoppe kørslen
+                errors.append({"stage": "makro", "type": type(exc).__name__, "message": eo.redact(str(exc))[:2000],
+                               "trace": eo.redact(traceback.format_exc())[-4000:]})
+        con.say(mk.status_line(makro_snap))
+
     horizon = int(os.environ.get("VT_EARNINGS_DAYS", "14"))
     with quiet_fds(log_path):  # yfinance skriver advarsler, der kan nævne symboler
         verified = dtj.verified_reports(datacheck)
@@ -1898,7 +1925,8 @@ def main(argv: list[str] | None = None) -> int:
             runtime, store, vt_version = make_runtime(args.dry_run)
             if not args.dry_run:
                 VT_PATCHES.update(patch_vibe_trading())
-                brief = "\n\n".join(b for b in (dtj.agent_brief(datacheck), fr.agent_brief(fred_snap)) if b)
+                brief = "\n\n".join(b for b in (dtj.agent_brief(datacheck), fr.agent_brief(fred_snap),
+                                              mk.agent_brief(makro_snap)) if b)
                 shellfree = prepare_shellfree_presets(Path.home() / ".vibe-trading" / "swarm" / "presets", brief=brief,
                                                       eodhd_ready=bool(eodhd_info.get("tool") and eodhd_info.get("key")),
                                                       fred_ready=fred_ready)
@@ -1993,7 +2021,7 @@ def main(argv: list[str] | None = None) -> int:
                       "cash_reserved_sek": portfolio.get("cash_reserved_sek") or 0.0,
                       "weights_cost": cost_weights(portfolio)},
         "upcoming_reports": reports, "plan": [{"preset": s["preset"], "reason": s["reason"]} for s in plan],
-        "datacheck": datacheck, "eodhd": eodhd_info, "fred": fred_snap,
+        "datacheck": datacheck, "eodhd": eodhd_info, "fred": fred_snap, "makro_eu": makro_snap,
         "runs": runs,
         "totals": {"tokens_in": tin, "tokens_out": tout, "duration_s": round(time.monotonic() - t0),
                    "est_cost_usd": round(sum(r.get("est_cost_usd", 0) for r in runs), 2),

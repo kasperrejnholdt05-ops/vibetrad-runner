@@ -171,6 +171,35 @@ def test_tool_actions_are_compact_and_safe():
     assert json.loads(eo._tool_execute(eo.EodhdClient(""), action="eod", symbol="A.US"))["ok"] is False
 
 
+def test_tool_news_query_sentiment_and_trends():
+    seen: list = []
+    c = eo.EodhdClient(KEY, opener=opener_for({
+        "/news": [{"date": "2026-10-16", "title": "SpaceX to Post Third Quarter 2026 Results on October 20, 2026",
+                   "content": "SpaceX announced its earnings date ...", "symbols": ["SPCX.US"], "link": "u1"},
+                  {"date": "2026-10-19", "title": "AI capex may be Meta's biggest earnings test", "content": "meta",
+                   "symbols": ["META.US", "SPCX.US"], "link": "u2"}],
+        "/sentiments": {"SPCX.US": [{"date": "2026-10-19", "count": 36, "normalized": 0.64}]},
+        "/calendar/trends": {"trends": [{"code": "SPCX.US", "period": "0q", "earningsEstimateAvg": 0.11}]},
+    }, seen), sleep=lambda s: None)
+    n = json.loads(eo._tool_execute(c, action="news", symbol="SPCX.US", query="earnings date"))
+    assert [x["title"][:12] for x in n["data"]] == ["SpaceX to Po"] and n["data"][0]["snippet"].startswith("SpaceX announced")
+    assert "limit=50" in seen[-1]  # søgeord: hent flere og filtrér
+    assert json.loads(eo._tool_execute(c, action="news", symbol="SPCX.US", query="zzz"))["data"] == []
+    sent = json.loads(eo._tool_execute(c, action="sentiment", symbols=["SPCX.US"], start="2026-10-12"))
+    assert sent["data"]["SPCX.US"][0]["normalized"] == 0.64 and "/sentiments" in seen[-1] and "s=SPCX.US" in seen[-1]
+    tr = json.loads(eo._tool_execute(c, action="earnings_trends", symbols="SPCX.US"))
+    assert tr["data"][0]["earningsEstimateAvg"] == 0.11 and c.calls >= 10  # trends vægter 10
+    assert "insider" in eo.TOOL_DESCRIPTION and "sentiment" in eo.TOOL_PARAMETERS["properties"]["action"]["enum"]
+
+
+def test_economic_events_pass_type_filter():
+    seen: list = []
+    c = eo.EodhdClient(KEY, opener=opener_for({"/economic-events": [{"type": "Interest Rate Decision"}]}, seen),
+                       sleep=lambda s: None)
+    assert c.economic_events("SE", "2026-04-01", "2027-02-01", 200, event_type="Interest Rate Decision")[0]["type"] == "Interest Rate Decision"
+    assert "type=Interest+Rate+Decision" in seen[-1] and "country=SE" in seen[-1]
+
+
 def test_install_into_real_vibe_trading(monkeypatch, tmp_path):
     pytest.importorskip("src.market_data")  # kun hvor vibe-trading-ai er installeret (codespacet / Actions)
     monkeypatch.setenv("HOME", str(tmp_path))

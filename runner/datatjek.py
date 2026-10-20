@@ -326,6 +326,17 @@ class EodhdSource:
             self.errors.append(str(exc))
         return ev
 
+    def news(self, code: str, *, start: str | None = None, limit: int = 200) -> list[dict]:
+        """Overskrifter og de første 1 500 tegn af teksten til regnskabsdato-scanningen. For et selskab som SpaceX
+        dækker 50 artikler under et døgn (19/10/2026: 51 artikler på én dag), så der hentes op til 200."""
+        try:
+            return [{"date": n.get("date"), "title": n.get("title"), "symbols": n.get("symbols") or [],
+                     "content": str(n.get("content") or "")[:1500]}
+                    for n in self.client.news(code, start=start, limit=limit)]
+        except eo.EodhdError as exc:
+            self.errors.append(str(exc))
+            raise
+
 
 # ---------------------------------------------------------------------------
 # Selve tjekket
@@ -355,6 +366,131 @@ def instruments(p: dict) -> list[dict]:
     if BENCHMARK not in seen:
         out.append({"ticker": BENCHMARK, "name": "iShares MSCI ACWI (sammenligning)", "role": "benchmark", "kind": "etf"})
     return out
+
+
+# Regnskabsdato fra nyhedsoverskrifter: selskabets egen meddelelse ("SpaceX to Post Third Quarter 2026 Results and
+# Host Webcast on October 20, 2026") eller omtale ("SpaceX surprises Wall Street with Oct. 20 earnings date").
+# EODHD's kalender gav 03/11 for SpaceX, mens selskabet selv havde meldt 20/10 (kørslen 19/10/2026).
+_MONTHS = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "maj": 5, "jun": 6, "jul": 7, "aug": 8, "sep": 9, "oct": 10,
+           "okt": 10, "nov": 11, "dec": 12}
+_EARN_WORDS = re.compile(r"(earnings|results|report|quarter|regnskab|kvartal|delårsrapport|halvårsrapport|årsrapport|rapport)", re.I)
+_ANNOUNCE = re.compile(r"\b(to (?:post|report|release|announce|host|publish|hold)|sets?|announces?|schedules?|"
+                       r"publiceras|offentliggør|offentliggöres|præsenterer|presenterar)\b", re.I)
+_NOT_DATE = re.compile(r"\b(ex-dividend|dividend|split|ipo|lock-?up|conference|investor day|capital markets day)\b", re.I)
+_MD = re.compile(r"\b(jan|feb|mar|apr|may|maj|jun|jul|aug|sep|oct|okt|nov|dec)[a-zæøåäö]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?\b", re.I)
+_DM = re.compile(r"\b(\d{1,2})\.?\s+(jan|feb|mar|apr|may|maj|jun|jul|aug|sep|oct|okt|nov|dec)[a-zæøåäö]*\b", re.I)
+
+
+_NAME_ALIASES = {"alphabet": ["google"], "meta": ["facebook"], "space exploration technologies": ["spacex"]}
+_NAME_SKIP = {"corp", "corporation", "inc", "class", "common", "stock", "ltd", "plc", "ab", "a/s", "asa", "oyj", "the", "and", "ser"}
+
+
+def name_words(*names: str | None) -> set[str]:
+    """Ord fra selskabets navn(e), der kan genkende en overskrift om selskabet (små bogstaver, ≥ 4 tegn)."""
+    out: set[str] = set()
+    for name in names:
+        text = str(name or "").lower()
+        for key, extra in _NAME_ALIASES.items():
+            if key in text:
+                out.update(extra)
+        for w in re.findall(r"[a-zæøåäöé0-9][a-zæøåäöé0-9&-]+", text):
+            if len(w) >= 4 and w not in _NAME_SKIP:
+                out.add(w)
+    return out
+
+
+# Sætninger i brødteksten, der fastsætter datoen: "is scheduled to announce Q3 earnings results on Tuesday,
+# October 20th, after market close", "will report third-quarter results on Oct. 28". Overskriften alene
+# nævner ofte ikke datoen (kørslen 19/10/2026: "SpaceX Q3 earnings: Revenue seen surging …").
+_SCHEDULE = re.compile(r"\b(scheduled to (?:announce|report|release|post)|will (?:announce|report|release|post)|"
+                       r"is set to (?:announce|report|release|post)|plans to (?:announce|report|release)|"
+                       r"to (?:announce|report|release|post) (?:its |their )?(?:third|fourth|first|second|q[1-4]|quarterly|"
+                       r"fiscal)|reports? (?:its |their )?(?:third|fourth|first|second|q[1-4]|quarterly|fiscal)[^.]{0,40}"
+                       r"(?:results|earnings) on|offentliggør (?:regnskab|delårsrapport|kvartalsrapport)|"
+                       r"publicerar (?:delårsrapport|kvartalsrapport|rapport))\b", re.I)
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
+
+
+def _schedule_sentences(content: str, words: set[str]) -> list[str]:
+    """Sætninger i teksten, der fastsætter en regnskabsdato for selskabet (navneord + skemalægnings-ordlyd)."""
+    out = []
+    for sent in _SENTENCE_END.split(str(content or "")[:1500]):
+        low = sent.lower()
+        if len(sent) > 400 or not _SCHEDULE.search(sent) or not _EARN_WORDS.search(sent):
+            continue
+        if words and not any(w in low for w in words):
+            continue
+        out.append(sent)
+    return out
+
+
+def earnings_date_from_news(items: Iterable[dict], ref_day: str, horizon_days: int = 120,
+                            names: Iterable[str] | None = None) -> dict | None:
+    """Find den næste regnskabsdato i nyhedsoverskrifter (engelsk, dansk, svensk).
+
+    Kun overskrifter, der både nævner regnskab/resultater og en dato (måned + dag), tæller. Året er
+    udgivelsesåret, medmindre datoen så ville ligge mere end 60 dage før udgivelsen (så næste år). Datoer
+    uden for [i dag, i dag + horizon_days] ignoreres. Flest overskrifter om samme dato vinder, derefter den
+    senest udgivne. "confirmed" = en overskrift med meddelelses-ordlyd (to post/report, sets, announces,
+    publiceras, offentliggør). Med ``names`` (ord fra selskabets navn) skal selskabet være overskriftens
+    emne: et af ordene blandt de første to ord ("SpaceX to Post …", "Nvidia sets Nov. 18 …"), medmindre
+    artiklen kun handler om få selskaber (højst 2 symboler). Ellers kunne "Meta and SpaceX report this week:
+    Meta on Oct. 28" give SpaceX Metas dato.
+    """
+    ref = dt.date.fromisoformat(ref_day)
+    last = ref + dt.timedelta(days=horizon_days)
+    words = {w.lower() for w in (names or [])}
+    found: dict[str, dict] = {}
+    def dates_in(text: str, pub_d: dt.date) -> list[dt.date]:
+        hits = [(m.group(1), m.group(2)) for m in _MD.finditer(text)] + [(m.group(2), m.group(1)) for m in _DM.finditer(text)]
+        out = []
+        for mon, day in hits:
+            try:
+                d = dt.date(pub_d.year, _MONTHS[mon[:3].lower()], int(day))
+            except (KeyError, ValueError):
+                continue
+            if (pub_d - d).days > 60:
+                d = d.replace(year=d.year + 1)
+            if ref <= d <= last:
+                out.append(d)
+        return out
+
+    def note(d: dt.date, text: str, pub: str, confirmed: bool) -> None:
+        key = d.isoformat()
+        rec = found.setdefault(key, {"date": key, "count": 0, "confirmed": False, "title": text, "published": pub})
+        rec["count"] += 1
+        if confirmed and not rec["confirmed"]:
+            rec["confirmed"] = True
+            rec["title"], rec["published"] = text, pub
+        elif pub > rec["published"] and not rec["confirmed"]:
+            rec["title"], rec["published"] = text, pub
+
+    for n in items or []:
+        title = str(n.get("title") or "")
+        pub = str(n.get("date") or "")[:10]
+        try:
+            pub_d = dt.date.fromisoformat(pub)
+        except ValueError:
+            pub_d = ref
+        # a) overskriften: regnskabsord + dato, selskabet som emne
+        if title and _EARN_WORDS.search(title) and not _NOT_DATE.search(title):
+            subject_ok = True
+            if words and len(n.get("symbols") or []) > 2:
+                head = re.findall(r"[a-zæøåäöé0-9&-]+", title.lower())[:2]
+                subject_ok = any(any(w in h for h in head) for w in words)
+            if subject_ok:
+                for d in dates_in(title, pub_d):
+                    note(d, title, pub, bool(_ANNOUNCE.search(title)))
+        # b) brødteksten: en sætning, der skemalægger regnskabet for selskabet, tæller som bekræftet
+        for sent in _schedule_sentences(n.get("content") or "", words):
+            if _NOT_DATE.search(sent):
+                continue
+            for d in dates_in(sent, pub_d):
+                note(d, sent.strip()[:160], pub, True)
+    if not found:
+        return None
+    best = max(found.values(), key=lambda r: (r["confirmed"], r["count"], r["published"]))
+    return {"date": best["date"], "confirmed": best["confirmed"], "title": best["title"][:120], "published": best["published"]}
 
 
 def portfolio_dates(p: dict, ref: dt.date | None = None) -> dict[str, str]:
@@ -707,6 +843,19 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
         name = next(i["name"] for i in insts if i["ticker"] == code)
         e_rows = [x for x in cal.get(code, []) if x["date"] >= ref_day]
         e_next = e_rows[0] if e_rows else None
+        # Selskabets egen meddelelse i nyhedsstrømmen ("… to Post Third Quarter Results … on October 20")
+        news_hit = None
+        news_scanned: int | None = None
+        news_error: str | None = None
+        if getattr(eod, "available", False) and hasattr(eod, "news"):
+            try:
+                items = eod.news(code, start=(ref.date() - dt.timedelta(days=45)).isoformat(), limit=200)
+                news_scanned = len(items)
+                pnames = [h.get("name") for h in (p.get("holdings") or []) if norm_ticker(h.get("ticker")) == code]
+                words = name_words(name, *pnames) | {code.split(".")[0].lower()}
+                news_hit = earnings_date_from_news(items, ref_day, horizon_days, names=words)
+            except Exception as exc:  # noqa: BLE001 - nyheder er en ekstra kilde, aldrig en grund til at stoppe
+                news_hit, news_error = None, type(exc).__name__
         vt_prof = (profiles.get(code, {}).get("vt", {}) or {})
         vt_all = sorted(d for d in vt_prof.get("earnings_dates", []) if d)
         if vt_all and vt_all[-1] < ref_day:  # kun datoer for et overstået regnskab
@@ -716,7 +865,8 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
         p_date = pdates.get(code) if (pdates.get(code) or "") >= ref_day else None
         cand = {"portefølje": p_date,
                 "EODHD": e_next["date"] if e_next else None,
-                "Vibe-Trading": vt_all[0] if vt_all and not window else None}
+                "Vibe-Trading": vt_all[0] if vt_all and not window else None,
+                "nyhed": news_hit["date"] if news_hit else None}
         # Vibetrad henter selv datoen fra EODHD. Så er porteføljens dato en kopi og ikke en egen kilde,
         # medmindre EODHD ikke svarer i denne kørsel (så er kopien det bedste bud)
         if psrc.get(code) == "eodhd" and cand["EODHD"]:
@@ -728,7 +878,21 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
                              "vibe_trading": vt_all[0] if vt_all else None,
                              "vibe_trading_to": window[1] if window else None,
                              "vt_estimate": bool(vt_prof.get("earnings_estimate") or window),
+                             "news": news_hit["date"] if news_hit else None,
+                             "news_confirmed": bool(news_hit and news_hit["confirmed"]),
+                             "news_title": news_hit["title"] if news_hit else None,
+                             "news_published": news_hit["published"] if news_hit else None,
+                             "news_scanned": news_scanned, "news_error": news_error,
                              "status": "ok", "notes": []}
+        if news_hit:
+            r["notes"].append(f"nyhed {dmy(news_hit['published'])}: {news_hit['title'][:90]}")
+        elif news_error:
+            r["notes"].append(f"nyheder kunne ikke hentes ({news_error})")
+        # EODHD's kalender er et skabelon-estimat for nyligt noterede selskaber (SpaceX: 03/11, rigtig dato 20/10)
+        ipo_iso = ((profiles.get(code, {}).get("eodhd") or {}).get("ipo_date")) or ""
+        new_listing = bool(ipo_iso) and ipo_iso > (ref.date() - dt.timedelta(days=365)).isoformat()
+        if new_listing and cand["EODHD"]:
+            r["eodhd_estimate"] = True
 
         def near(d: str, best: str) -> bool:
             return abs((dt.date.fromisoformat(d) - dt.date.fromisoformat(best)).days) <= 1
@@ -748,6 +912,13 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
                 confirmed.add(cand["Vibe-Trading"])
             if cand["portefølje"] and psrc.get(code) == "manuel":  # skrevet ind i Vibetrad, typisk fra selskabets IR
                 confirmed.add(cand["portefølje"])
+            if cand["nyhed"] and news_hit and news_hit["confirmed"]:  # selskabets egen meddelelse i nyhedsstrømmen
+                confirmed.add(cand["nyhed"])
+            # En dateret nyhed fra de seneste 21 dage slår kalenderen ved uafgjort: nyheder afspejler selskabets
+            # meddelelse, kalenderen er et estimat (for nye selskaber et skabelon-estimat). Vist som "nyhed", ikke bekræftet.
+            trusted = set(confirmed)
+            if cand["nyhed"] and news_hit and news_hit["published"] >= (ref.date() - dt.timedelta(days=21)).isoformat():
+                trusted.add(cand["nyhed"])
             # Flest kilder vinder. Ved uafgjort: en bekræftet dato, ellers den TIDLIGSTE (risiko først: hellere
             # forberedt for tidligt end overrasket). Før 19/10/2026 vandt EODHD ved uafgjort, og SpaceX fik
             # EODHD's estimat 03/11 i stedet for Yahoos 20/10, som var den rigtige dato.
@@ -760,9 +931,11 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
                 return dt.date.fromisoformat(d).toordinal()
 
             anchor = max(counts, key=lambda d: (support(d), any(near(c, d) for c in confirmed),
+                                                any(near(c, d) for c in trusted),
+                                                -(1 if new_listing and near(cand["EODHD"] or "0001-01-01", d) else 0),
                                                 -min(ordinal(x) for x in counts if near(x, d))))
             group = [d for d in counts if near(d, anchor)]
-            best = max(group, key=lambda d: (counts[d], d in confirmed, d == cand["EODHD"], -ordinal(d)))
+            best = max(group, key=lambda d: (counts[d], d in confirmed, d in trusted, d == cand["EODHD"], -ordinal(d)))
             in_window = bool(window and window[0] <= best <= window[1])
             r["verified"] = best
             r["confirmed"] = best in confirmed
@@ -776,7 +949,10 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
                 r["status"] = "warn"
                 runner_up = max((support(d) for d in counts if not near(d, best)), default=0)
                 why = ("flest kilder" if support(best) > runner_up else
-                       "bekræftet dato" if best in confirmed else "uenighed: den tidligste dato er valgt")
+                       "bekræftet dato" if best in confirmed else
+                       "nyhed fra de seneste 21 dage" if best in trusted else
+                       "EODHD-kalenderen er et estimat for et nyligt noteret selskab" if new_listing and not near(best, cand["EODHD"] or "0001-01-01") else
+                       "uenighed: den tidligste dato er valgt")
                 r["notes"].append(f"datoer afviger: {', '.join(off)} (valgt {dmy(best)}: {why})")
                 if cand["portefølje"] and not near(cand["portefølje"], best) and r["agree"] >= 2:
                     r["notes"].append("ret datoen i VT_PORTFOLIO (Vibetrad → Overvågning/Beholdninger)")
