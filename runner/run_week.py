@@ -70,7 +70,10 @@ PRESET_LABELS = {
     "fundamental_research_team": "Fundamental analyse",
     "macro_strategy_forum": "Makrostrategi (5 år)",
     "sector_rotation_team": "Sektorer og temaer",
+    "visser_panel": "Visser-panelet (trend mod tese)",
 }
+# Vibetrads egne presets (fx Visser-panelet) ligger i repoet og kopieres med de indbyggede.
+VIBETRAD_PRESETS_DIR = Path(__file__).resolve().parent / "presets"
 
 # Ekstra Vibe-Trading-skills, der lægges på bestemte agenter (agent-id → skills).
 # "*last*" er det sidste (syntetiserende) agent-trin i hvert preset.
@@ -109,6 +112,7 @@ EXTRA_TOOLS = {
     "technical_analysis_panel": {"*": ["get_eodhd_data"]},
     "macro_strategy_forum": {"*": ["get_macro_series", "get_eodhd_data"]},
     "sector_rotation_team": {"*": ["get_eodhd_data", "etf_holdings"]},
+    "visser_panel": {"*": ["get_eodhd_data"]},
 }
 DATA_GUIDANCE = """
 
@@ -619,6 +623,24 @@ def _clean_portfolio(p: dict) -> dict:
     p["monthly_deposit_sek"] = float(dep) if isinstance(dep, (int, float)) and not isinstance(dep, bool) and 0 < dep < 10_000_000 else None
     cc = re.sub(r"[^\w .,/()+-]", "", str(p.get("courtage_class") or "")).strip()[:40]
     p["courtage_class"] = cc or None
+    # Kurtagesatserne fra Vibetrad (Nordnets prisliste for kontoens klasse); kun tekst, ingen tal i loggen.
+    ct = re.sub(r"[^\w .,/()+%:;=–-]", "", str(p.get("courtage_terms") or "")).strip()[:300]
+    p["courtage_terms"] = ct or None
+    # Målporteføljen fra strategikørslen (Vibetrad → Plan): trendvagten og agenterne kender også de papirer,
+    # der endnu ikke er købt, og hvornår strategien vil købe dem.
+    tg = p.get("target")
+    clean_tg = []
+    for g in (tg if isinstance(tg, list) else [])[:20]:
+        if not isinstance(g, dict):
+            continue
+        typ = str(g.get("type") or "").strip().lower()
+        typ = typ if typ in ("etf", "aktie", "fond", "kontant") else "etf"
+        tk = dtj.norm_ticker(g.get("ticker")) if str(g.get("ticker") or "").strip() and typ != "kontant" else None
+        wait = str(g.get("wait") or "")[:10]
+        clean_tg.append({"name": re.sub(r"\s+", " ", str(g.get("name") or tk or typ)).strip()[:80], "ticker": tk, "type": typ,
+                         "weight": _num(g.get("weight"), "target.weight", default=0.0, allow_none=True) or 0.0,
+                         "wait": wait if re.fullmatch(r"\d{4}-\d{2}-\d{2}", wait) else None})
+    p["target"] = clean_tg
     # Hvor hver regnskabsdato i next_reports kommer fra (Vibetrad fra 19/10/2026): "eodhd" = hentet fra EODHD,
     # "manuel" = skrevet ind af Kasper, "brief" = Vibetrads kalender. En kopi af EODHD er ikke en egen kilde.
     src = p.get("next_reports_source")
@@ -755,8 +777,17 @@ def portfolio_text(p: dict) -> str:
     else:
         lines.append("Månedligt indskud: ikke oplyst. Antag ikke et beløb; sig, hvad planen kræver pr. måned.")
     broker = f"Nordnet, kurtageklasse {p['courtage_class']}" if p.get("courtage_class") else "Nordnet, kurtageklasse ikke oplyst"
-    lines.append(f"Kurtage: {broker}. Satsen og valutapåslaget kendes ikke her: angiv ingen kurtagesats, "
-                 "men skriv 'kurtage og valutaveksling efter din Nordnet-klasse'.")
+    if p.get("courtage_terms"):
+        lines.append(f"Kurtage: {broker}. Satser: {p['courtage_terms']}. Brug dem, når du regner en handel.")
+    else:
+        lines.append(f"Kurtage: {broker}. Satsen og valutapåslaget kendes ikke her: angiv ingen kurtagesats, "
+                     "men skriv 'kurtage og valutaveksling efter din Nordnet-klasse'.")
+    if p.get("target"):
+        parts = [f"{g['name']} ({g['ticker']}) {g['weight']:g} %" if g.get("ticker") else f"{g['name']} {g['weight']:g} %"
+                 for g in p["target"]]
+        waits = [f"{g['ticker'] or g['name']} købes tidligst {fr._dmy(g['wait'])}" for g in p["target"] if g.get("wait")]
+        lines.append("Målportefølje (fra strategikørslen, godkendt i Vibetrad): " + " · ".join(parts)
+                     + (". " + "; ".join(waits) if waits else "") + ".")
     if p.get("framework"):
         lines.append(f"Investeringsramme: {p['framework']}")
     if mandate_text(p):
@@ -789,7 +820,10 @@ def journal_instruction(p: dict) -> str:
             "beslutning. Medtag et afsnit 'Opfølgning på journalen' med én linje pr. post: holder tesen ud fra ugens data "
             "(ja/delvist/nej), er kill-kriteriet ramt, nær eller langt fra, og hvad der bør ske (hold, revurdér på "
             "opfølgningsdatoen, reducér) med begrundelse i tal. Skeln mellem god beslutning og godt udfald. Poster med "
-            "status 'planlagt' vurderes som: bør handlen stadig gennemføres?")
+            "status 'planlagt' vurderes som: bør handlen stadig gennemføres? Poster med status 'papir' er papirhandler "
+            "(ingen rigtige penge): regn, hvordan de har klaret sig siden datoen, og hvad processen lærer af dem. "
+            "Poster, hvis opfølgningsdato er passeret eller ligger inden for 14 dage, får en egentlig 3-måneders-"
+            "gennemgang: holder tesen, og hvad siger trendvagten (200-dages-reglen)?")
 
 
 # ---------------------------------------------------------------------------
@@ -875,6 +909,33 @@ def last_done(history: list[dict] | None, preset: str) -> str:
                 if preset in (w.get("presets") or []) and not w.get("dry_run")), default="")
 
 
+def visser_names(p: dict, limit: int = 8) -> str:
+    """Navnene til Visser-panelet: enkeltaktier i beholdningen, aktier i målporteføljen og på overvågningslisten."""
+    w = {x["ticker"]: x["weight_cost_pct"] for x in cost_weights(p)}
+    out: list[str] = []
+    seen: set[str] = set()
+    for h in p["holdings"]:
+        if h["kind"] in ("cash", "fund", "etf") or h["ticker"] in seen:
+            continue
+        seen.add(h["ticker"])
+        share = f", {w[h['ticker']]:g} % af anskaffelsen" if w.get(h["ticker"]) is not None else ""
+        out.append(f"{h['name']} ({h['ticker']}, beholdning{share})")
+    for g in p.get("target") or []:
+        if g.get("type") != "aktie" or not g.get("ticker") or g["ticker"] in seen:
+            continue
+        seen.add(g["ticker"])
+        wait = f", købes tidligst {fr._dmy(g['wait'])}" if g.get("wait") else ""
+        out.append(f"{g['name']} ({g['ticker']}, målportefølje {g['weight']:g} %{wait})")
+    for x in p.get("watchlist") or []:
+        t = x.get("ticker") if isinstance(x, dict) else None
+        if not t or t in seen or str(x.get("kind") or "stock") in ("etf", "fund"):
+            continue
+        seen.add(t)
+        note = re.sub(r"\s+", " ", str(x.get("note") or "")).strip()[:80]
+        out.append(f"{x.get('name') or t} ({t}, overvågning{': ' + note if note else ''})")
+    return "; ".join(out[:limit])
+
+
 def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, plan_kind: str = "fuld",
                reports: list[dict] | None = None, force_risk: bool = False,
                history: list[dict] | None = None, by_date: bool | None = None) -> list[dict]:
@@ -895,7 +956,8 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
     new_money = (f"nye indskud (ca. {dep:,.0f} SEK om måneden)".replace(",", " ") + f" og {cash_part}" if dep
                  else f"nye indskud og {cash_part}")
     scope = (f"Fordel kun {new_money}: sælg ikke de eksisterende aktier, og fordel ikke hele porteføljens værdi. "
-             "Angiv ingen kurtagesats. Foreslå kun UCITS-fonde og -ETF'er, der kan købes hos Nordnet (fx iShares MSCI "
+             + ("Regn kurtage efter satserne i porteføljeteksten. " if p.get("courtage_terms") else "Angiv ingen kurtagesats. ")
+             + "Foreslå kun UCITS-fonde og -ETF'er, der kan købes hos Nordnet (fx iShares MSCI "
              "ACWI UCITS ETF); amerikanske ETF'er som ACWI.US er kun dataproxy og kan ikke købes på en ISK. ")
 
     plan: list[dict] = [{
@@ -904,7 +966,8 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
             f"Vurdér drawdown, halerisiko og markedsregime for denne portefølje (periode {period}):\n{ptxt}\n"
             f"Vægte efter anskaffelse: {wtxt}. Brug portfolio_risk_xray på disse symboler og vægte, og quantlib_call til "
             f"VaR/CVaR/EVT og regime. Regn tabet i SEK i fire scenarier: 1) {biggest['name']} ({biggest['ticker']}) −30 %, "
-            f"2) {biggest['name']} −50 %, 3) USD/SEK −10 %, 4) amerikansk tech samlet −25 %. Brug VaR kun som supplement, "
+            f"2) {biggest['name']} −50 %, 3) USD/SEK −10 %, 4) aktiemarkedet samlet −25 % med hver positions egen historik "
+            "(enkeltaktier falder ofte mere end indekset). Brug VaR kun som supplement, "
             "angiv datavinduet, og sig tydeligt, når et papir har kort kurshistorik (se datatjekkets facit): så er "
             "volatilitet, VaR, beta og korrelation statistisk usikre. Hvilke ændringer sænker risikoen mest?"
             + LANG_SUFFIX)},
@@ -932,7 +995,7 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
                          "market": (f"globale ETF'er, der kan købes via Nordnet. Find dem, der sænker korrelationen mest "
                                     f"til en portefølje med {wtxt}. {scope}Skriv på dansk, beløb i SEK.")}},
             2: {"preset": "macro_rates_fx_desk", "reason": "Månedens 2. lørdag: makro, renter og USD/SEK",
-                "vars": {"goal": (f"Svensk investor med basisvaluta SEK og næsten al eksponering i amerikanske aktier ({wtxt}). "
+                "vars": {"goal": (f"Svensk investor med basisvaluta SEK og denne eksponering efter anskaffelse: {wtxt}. "
                                   "Vurdér Fed/Riksbanken, USD/SEK-retning og om valutarisikoen bør afdækkes eller spredes. "
                                   "Skriv på dansk, beløb i SEK."),
                          "timeframe": "1–6 måneder"}},
@@ -959,10 +1022,14 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
             slot = min(monthly, key=lambda k: (last_done(history, monthly[k]["preset"]), k))
         if slot in monthly:
             plan.append(monthly[slot])
-        rot_presets = ["investment_committee" if wl else "fundamental_research_team",
-                       "sentiment_intelligence_team", "technical_analysis_panel"]
-        rot = (iso_week % 3 if by_date or not history
-               else min(range(3), key=lambda i: (last_done(history, rot_presets[i]), i)))
+        # Rotation: fundamental/investeringskomité og Visser-panelet (fundamentals, nyheder og katalysatorer, trend,
+        # risiko og porteføljechef pr. navn). Uden enkeltaktier eller kandidater: de gamle sentiment- og teknik-teams.
+        vnames = visser_names(p)
+        rot_presets = (["investment_committee" if wl else "fundamental_research_team"]
+                       + (["visser_panel"] if vnames else ["sentiment_intelligence_team", "technical_analysis_panel"]))
+        n_rot = len(rot_presets)
+        rot = (iso_week % n_rot if by_date or not history
+               else min(range(n_rot), key=lambda i: (last_done(history, rot_presets[i]), i)))
         if rot == 0:
             if wl:
                 cand = wl[(iso_week // 3) % len(wl)]
@@ -978,18 +1045,30 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
                 plan.append({"preset": "fundamental_research_team", "reason": f"Fundamental analyse af {focus['name']}",
                              "vars": {"target": focus["ticker"], "market": f"{market_of(focus['ticker'])}. Skriv på dansk."
                                       + (SPACEX_HINT if focus["ticker"].startswith("SPCX") else "")}})
-        elif rot == 1:
+        elif rot_presets[rot] == "visser_panel":
+            plan.append({
+                "preset": "visser_panel",
+                "reason": "Visser-panelet: trend mod tese for satellitter og kandidater (hver 2. uge)",
+                "vars": {"names": vnames,
+                         "focus": ("Langsigtet ISK, ingen daghandel: reglen er et lag i analysen. "
+                                   + (f"Kommende regnskaber: {', '.join(r['ticker'] + ' ' + dmy(dt.date.fromisoformat(r['date'])) for r in (reports or []))}. "
+                                      if reports else "")
+                                   + "Skriv på dansk, DD/MM/YYYY, beløb også i SEK.")},
+            })
+        elif rot_presets[rot] == "sentiment_intelligence_team":
             plan.append({
                 "preset": "sentiment_intelligence_team",
-                "reason": "Sentiment (rotation hver 3. uge)",
-                "vars": {"market": "Amerikansk tech/AI: " + ", ".join(h["ticker"] for h in stocks) + ". Skriv på dansk.",
+                "reason": "Sentiment (rotation)",
+                "vars": {"market": "Porteføljens papirer: " + ", ".join(f"{h['name']} ({h['ticker']})" for h in p["holdings"])
+                                   + ". Medtag en katalysatorkalender for de næste 90 dage. Skriv på dansk.",
                          "timeframe": "seneste 1–4 uger"},
             })
         else:
             plan.append({
                 "preset": "technical_analysis_panel",
-                "reason": f"Teknisk analyse af største position (rotation hver 3. uge): {biggest['name']}",
-                "vars": {"target": biggest["ticker"], "timeframe": "daglig og ugentlig, 6–12 måneder. Skriv på dansk."},
+                "reason": f"Teknisk analyse af største position (rotation): {biggest['name']}",
+                "vars": {"target": biggest["ticker"], "timeframe": "daglig og ugentlig, 6–12 måneder; start med "
+                         "trendvagten i facit (200-dages-reglen). Skriv på dansk."},
             })
     plan.append({
         "preset": "portfolio_review_board", "reason": "Fast ugentlig CIO-gennemgang, der samler ugens agent-teams",
@@ -1239,7 +1318,8 @@ def _extra_tools_for(preset: str, agent: dict) -> list[str]:
 
 
 def prepare_shellfree_presets(dst: Path, src: Path | None = None, brief: str = "",
-                              eodhd_ready: bool | None = None, fred_ready: bool | None = None) -> list[str]:
+                              eodhd_ready: bool | None = None, fred_ready: bool | None = None,
+                              own_dir: Path | None = None) -> list[str]:
     """Kopiér Vibe-Tradings presets til brugermappen med kvant-værktøjer i stedet for shell.
 
     Vibe-Trading læser brugermappen før de indbyggede presets, så samme navne bruges.
@@ -1249,13 +1329,16 @@ def prepare_shellfree_presets(dst: Path, src: Path | None = None, brief: str = "
     """
     import yaml
 
+    default_src = src is None  # Vibetrads egne presets (runner/presets) følger kun med de indbyggede
     if src is None:
         from src.swarm import presets as _p
 
         src = Path(_p.PRESETS_DIR)
     dst.mkdir(parents=True, exist_ok=True)
     changed = []
-    for f in sorted(Path(src).glob("*.yaml")):
+    own_dir = VIBETRAD_PRESETS_DIR if own_dir is None and default_src else own_dir
+    own = sorted(Path(own_dir).glob("*.yaml")) if own_dir and Path(own_dir).is_dir() else []
+    for f in sorted(Path(src).glob("*.yaml")) + own:
         spec = yaml.safe_load(f.read_text("utf-8"))
         touched = False
         agents = spec.get("agents", [])

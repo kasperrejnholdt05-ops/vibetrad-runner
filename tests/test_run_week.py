@@ -230,10 +230,13 @@ def test_plan_full_week_with_watchlist():
 
 def test_plan_first_saturday_odd_week_and_core():
     p = rw.load_portfolio(json.dumps(PORTFOLIO))
-    ref = sto("2026-11-07T08:00")  # 1. lørdag (ETF), uge 45 -> rotation 0 uden overvågningsliste = fundamental analyse
+    ref = sto("2026-11-07T08:00")  # 1. lørdag (ETF), uge 45 -> rotation 1 af 2 = Visser-panelet (aktier i beholdningen)
     plan = rw.build_plan(p, ref, rw.week_window(ref), reports=[])
-    assert presets(plan) == ["risk_committee", "etf_allocation_desk", "fundamental_research_team", "portfolio_review_board"]
-    assert plan[2]["vars"]["target"] in ("ZZTOP.US", "QQQX.US")
+    assert presets(plan) == ["risk_committee", "etf_allocation_desk", "visser_panel", "portfolio_review_board"]
+    assert "Hemmelig Raket (ZZTOP.US, beholdning" in plan[2]["vars"]["names"] and "ingen daghandel" in plan[2]["vars"]["focus"]
+    ref44 = sto("2026-10-31T08:00")  # uge 44 -> rotation 0 uden overvågningsliste = fundamental analyse
+    p44 = rw.build_plan(p, ref44, rw.week_window(ref44), reports=[])
+    assert "fundamental_research_team" in presets(p44) and "visser_panel" not in presets(p44)
     assert presets(rw.build_plan(p, ref, rw.week_window(ref), plan_kind="kerne")) == ["risk_committee", "portfolio_review_board"]
     capped = rw.build_plan(p, ref, rw.week_window(ref), max_swarms=2)
     assert presets(capped) == ["risk_committee", "portfolio_review_board"]  # CIO bevares altid
@@ -584,7 +587,7 @@ def test_end_to_end_dry_run_first_saturday(tmp_path):
         assert "Hemmelig" not in f.read_text() and "ZZTOP" not in f.read_text()
     data = rw.decrypt(env, PASS)
     assert [r["preset"] for r in data["runs"]] == ["risk_committee", "etf_allocation_desk",
-                                                   "sentiment_intelligence_team", "portfolio_review_board"]
+                                                   "fundamental_research_team", "portfolio_review_board"]
     assert data["status"] == "ok" and data["portfolio"]["holdings"][0]["name"] == "Hemmelig Raket"
     assert env["public"]["status"] == "ok" and env["public"]["completed"] == 4
     assert env["public"]["week_to"] == "2026-10-02" and env["public"]["cost_usd"] > 0
@@ -685,7 +688,7 @@ def test_button_runs_rotate_to_least_recent_team(monkeypatch):
             {"generated_at": "2026-10-13T09:00:00+02:00", "presets": ["fund_selection_panel"], "dry_run": True}]
     names = presets(rw.build_plan(p, ref, rw.week_window(ref), reports=[], history=hist, by_date=False))
     # fondsvalg kørte kun som tørkørsel -> tæller ikke; aldrig-kørte teams vælges først i fast rækkefølge
-    assert "fund_selection_panel" in names and "technical_analysis_panel" in names
+    assert "fund_selection_panel" in names and "visser_panel" in names  # aldrig kørt -> vælges før komitéen
     monkeypatch.setenv("VT_MONTHLY_SLOT", "2")
     assert "macro_rates_fx_desk" in presets(rw.build_plan(p, ref, rw.week_window(ref), reports=[], history=hist, by_date=False))
 
@@ -903,7 +906,7 @@ def test_transition_policy_goal_text_and_risk_scenarios():
     cio = by["portfolio_review_board"]["vars"]["goal"]
     assert "overgangsplan" in cio and "i stedet for at sælge ned til 10 % med det samme" in cio
     risk = by["risk_committee"]["vars"]["goal"]
-    for txt in ("−30 %", "−50 %", "USD/SEK −10 %", "amerikansk tech samlet −25 %", "Brug VaR kun som supplement", "kort kurshistorik"):
+    for txt in ("−30 %", "−50 %", "USD/SEK −10 %", "aktiemarkedet samlet −25 %", "Brug VaR kun som supplement", "kort kurshistorik"):
         assert txt in risk, txt
     # en goal fra VT_PORTFOLIO vinder stadig, og en ukendt politik bliver "limit"
     p2 = rw.load_portfolio(json.dumps(dict(PORTFOLIO, weight_policy="nonsens", goal="Egen tekst.")))

@@ -32,6 +32,7 @@ _HERE = str(Path(__file__).resolve().parent)
 if _HERE not in sys.path:  # runner/ ligger på stien, når run_week.py eller tests kører
     sys.path.insert(0, _HERE)
 import eodhd as eo  # noqa: E402
+import trend as tr  # noqa: E402
 
 STO = ZoneInfo("Europe/Stockholm")
 BENCHMARK = "ACWI.US"
@@ -363,6 +364,13 @@ def instruments(p: dict) -> list[dict]:
             seen.add(t)
             out.append({"ticker": t, "name": w.get("name") or t, "role": "overvågning", "kind": w.get("kind") or "stock",
                         "note": w.get("note")})
+    # Målporteføljen fra strategikørslen (Vibetrad → Plan): også de papirer, der endnu ikke er købt
+    for g in p.get("target") or []:
+        t = norm_ticker(g.get("ticker")) if isinstance(g, dict) and g.get("ticker") else ""
+        if t and t not in seen and g.get("type") != "kontant":
+            seen.add(t)
+            out.append({"ticker": t, "name": g.get("name") or t, "role": "målportefølje",
+                        "kind": "etf" if g.get("type") in ("etf", "fond") else "stock", "target_pct": _num(g.get("weight"))})
     if BENCHMARK not in seen:
         out.append({"ticker": BENCHMARK, "name": "iShares MSCI ACWI (sammenligning)", "role": "benchmark", "kind": "etf"})
     return out
@@ -698,6 +706,30 @@ def _week_pl_deposits(p: dict, prow: list[dict], px: dict, week: dict, total: fl
     return week_sek, pl, path
 
 
+def trend_check(insts: list[dict], vt: Any, eod: Any, ref: dt.datetime) -> dict:
+    """Trendvagten (runner/trend.py) på ca. 14 måneders dagskurser: EODHD først, Vibe-Trading som reserve."""
+    start = (ref.date() - dt.timedelta(days=430)).isoformat()
+    end = ref.date().isoformat()
+    items = []
+    for i in insts:
+        rows: list[tuple[str, float]] = []
+        src = None
+        for name, s in (("eodhd", eod), ("vibe_trading", vt)):
+            if not getattr(s, "available", False):
+                continue
+            try:
+                got = s.prices([i["ticker"]], start, end).get(i["ticker"]) or {}
+            except Exception:  # noqa: BLE001 - trendvagten må aldrig vælte datatjekket
+                got = {}
+            if len(got.get("rows") or []) >= tr.MIN_ROWS:
+                rows, src = got["rows"], name
+                break
+            rows = rows or got.get("rows") or []
+        st = tr.status(rows)
+        items.append({"ticker": i["ticker"], "name": i["name"], "role": i["role"], "source": src, **st})
+    return {"rule": tr.rule_text(), "items": items}
+
+
 def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = None,
         horizon_days: int = 120, with_profiles: bool = True) -> dict:
     """Kør datatjekket. ``vt``/``eod`` kan erstattes i tests."""
@@ -754,6 +786,8 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
         if pair in fx_shift:
             r["info"] = fx_shift[pair]
         fx_rows.append(r)
+
+    trend = trend_check(insts, vt, eod, ref)
 
     # Nøgletal, navn, valuta og IPO/lock-up (og kort kurshistorik)
     fundamentals, events = [], []
@@ -1060,7 +1094,7 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
                               "errors": list(dict.fromkeys(getattr(eod, "errors", [])))[:10]}},
         "counts": count, "instruments": rows, "fx": fx_rows, "fundamentals": fundamentals,
         "earnings": earnings, "events": sorted(events, key=lambda e: e["date"]), "portfolio": portfolio,
-        "short_history": short_history, "portfolio_as_of": as_of, "portfolio_age_days": portfolio_age,
+        "short_history": short_history, "trend": trend, "portfolio_as_of": as_of, "portfolio_age_days": portfolio_age,
         "weight_policy": p.get("weight_policy", "limit"),
         "issues": issues[:40],
     }
@@ -1089,7 +1123,24 @@ def alternative_reports(dc: dict | None) -> dict[str, list[str]]:
     return {e["ticker"]: list(e["alternatives"]) for e in (dc or {}).get("earnings", []) if e.get("alternatives")}
 
 
-def agent_brief(dc: dict | None, limit: int = 5600) -> str:
+def trend_lines(dc: dict | None) -> list[str]:
+    """Trendvagten som facit: én linje pr. papir."""
+    t = (dc or {}).get("trend") or {}
+    items = [x for x in t.get("items") or [] if x.get("state")]
+    if not items:
+        return []
+    out = [f"**Trendvagt (200-dages-reglen, Jordi Visser):** {t.get('rule')}. Et lag i analysen, ikke et handelssignal:"]
+    for x in items:
+        if x["state"] == "short":
+            out.append(f"- {x['name']} ({x['ticker']}): {x['label']}")
+            continue
+        out.append(f"- {x['name']} ({x['ticker']}, {x['role']}): {x['label']} · kurs {_nf(x['close'])} mod 200 dage "
+                   f"{_nf(x['sma200'])} ({_sp(x['dist_pct'])}) · hældning {_sp(x['slope_pct'], 2)} på 20 dage · "
+                   f"ROC 63 dage {_sp(x['roc63_pct'])} (top {_sp(x['roc63_peak_pct'])}) · {dmy(x.get('date'))}")
+    return out
+
+
+def agent_brief(dc: dict | None, limit: int = 6800) -> str:
     """Kompakt facit (markdown), som alle agenter får i deres instruks."""
     if not dc:
         return ""
@@ -1118,6 +1169,9 @@ def agent_brief(dc: dict | None, limit: int = 5600) -> str:
         wk = _sp(src.get("week_pct")) + (f" / {_sp(pr['week_pct_sek'])}" if pr.get("week_pct_sek") is not None else "")
         lines.append(f"| {r['name']} ({r['ticker']}) | {_nf(src.get('close'))} {eo.currency_of(r['ticker']) or ''} "
                      f"({dmy(src.get('date'))}) | {wk} | {_nf(pr.get('value_sek'), 0)} | {w} | {rep} |")
+    tl = trend_lines(dc)
+    if tl:
+        lines += [""] + tl
     fx = " · ".join(f"{f['pair'][:3]}/{f['pair'][3:]} {_nf((f.get('eodhd') or f.get('vt') or {}).get('close'), 4)}"
                     for f in dc.get("fx", []))
     pf = dc.get("portfolio", {})
@@ -1179,7 +1233,12 @@ def agent_brief(dc: dict | None, limit: int = 5600) -> str:
 def cio_instruction(dc: dict | None) -> str:
     if not dc:
         return ""
-    extra = ("\n\nDatakvalitet: Vibetrads datatjek (Vibe-Trading × EODHD) gav status "
+    extra = ("\n\nTrendvagt: facit har en linje pr. papir med 200-dages-reglen. Medtag et afsnit 'Trend mod tese': "
+             "for hver position og købskandidat, om trenden er med eller imod tesen, og hvad det betyder. Står et "
+             "papir 'Under 200 dage' eller 'Brud', skal et køb eller en øgning have en eksplicit grund (fx værdi), og "
+             "en position, man ejer, skal revurderes. Brug reglen som et lag i analysen, ikke som et handelssignal; "
+             "porteføljen handles ikke tit." if (dc.get("trend") or {}).get("items") else "")
+    extra += ("\n\nDatakvalitet: Vibetrads datatjek (Vibe-Trading × EODHD) gav status "
              f"{dc['status']}. Medtag et kort afsnit 'Datakvalitet' i rapporten: hvilke afvigelser påvirker "
              "konklusionen, og hvilke tal du har brugt.")
     if dc.get("issues"):
