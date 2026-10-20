@@ -39,6 +39,10 @@ on:
         description: "Tørkørsel uden LLM-kald (tester kæden gratis)"
         type: boolean
         default: false
+      canary:
+        description: "Kanariefugl nu: samme gratis tjek af hele kæden som den natlige (skriver kun results/canary.json)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -73,8 +77,8 @@ jobs:
       VT_PRICE_IN_PER_MTOK: ${{ vars.VT_PRICE_IN_PER_MTOK || '2' }}
       VT_PRICE_OUT_PER_MTOK: ${{ vars.VT_PRICE_OUT_PER_MTOK || '10' }}
       VT_MONTHLY_SLOT: ${{ inputs.monthly_slot || '' }}
-      VT_CANARY: ${{ github.event.schedule == '30 3 * * *' && 'true' || 'false' }}
-      VT_DRY_RUN: ${{ (inputs.dry_run || github.event.schedule == '30 3 * * *') && 'true' || 'false' }}
+      VT_CANARY: ${{ (inputs.canary || github.event.schedule == '30 3 * * *') && 'true' || 'false' }}
+      VT_DRY_RUN: ${{ (inputs.dry_run || inputs.canary || github.event.schedule == '30 3 * * *') && 'true' || 'false' }}
       VT_DATATJEK: ${{ vars.VT_DATATJEK || 'on' }}
       # Vibe-Tradings web_search må ikke falde tilbage på kinesiske søgemaskiner.
       VIBE_TRADING_SEARCH_BING_FALLBACK: "0"
