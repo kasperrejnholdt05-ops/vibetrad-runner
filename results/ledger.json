@@ -61,6 +61,16 @@
    "dry_run": false,
    "runs": 6,
    "completed": 2
+  },
+  {
+   "run_id": "2026-W43_20261020-1548_39416768983",
+   "generated_at": "2026-10-20T15:48:24+02:00",
+   "week_id": "2026-W43",
+   "cost_usd": 30.07,
+   "status": "partial",
+   "dry_run": false,
+   "runs": 7,
+   "completed": 6
   }
  ]
 }
