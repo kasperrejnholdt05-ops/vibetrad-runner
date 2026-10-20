@@ -256,6 +256,10 @@ Upload resultatet i Vibe-Tradings Agent-chat. Shadow-backtesten understøtter am
 
 Opdatér `VT_PORTFOLIO` (Kopiér VT_PORTFOLIO i Vibetrad → `gh secret set VT_PORTFOLIO --repo kasperrejnholdt05-ops/vibetrad-runner`). Ellers analyserer lørdagens kørsel den gamle beholdning.
 
+## Strategikørsel: byg porteføljen fra kontant
+
+Når alt er solgt (`holdings` tom, `cash_sek` > 0), eller når workflow-inputtet `plan` sættes til **strategi**, kører runneren en fast plan på syv teams, der bygger én strategi fra bunden efter mandatet i `VT_PORTFOLIO` (`mandate`: horisont i år, tålt midlertidigt fald i %, univers `kerne+satellit` / `kun fonde` / `frit`, loft pr. enkeltaktie, valgfrit mål – sat under Vibetrad → Plan): Makrostrategi (`macro_strategy_forum`, Kina-økonomen er skrevet om til Sverige/EU), Sektorer og temaer (`sector_rotation_team`, UCITS-ETF'er som instrument), ETF-allokering, Fondsvalg, Idéjagt (5–8 vækstaktier som satellitter – eller temaer, hvis mandatet kun tillader fonde), Risikoudvalg (stresstest af en reference-vækstportefølje i fire scenarier mod det tålte fald) og CIO'en, der samler alt til én strategi: målallokering med ét Nordnet-instrument pr. byggesten, hvad der købes nu, fordeling af månedsindskud, afkastinterval og største realistiske fald, regler og uenigheder mellem teams. `VT_MAX_SWARMS` hæves automatisk til 7. Workflow-inputtet `monthly_budget_usd` kan hæve månedsloftet for én kørsel. Alle agenter får "Ingen værdipapirer – alt står kontant" og mandatet i porteføljeteksten.
+
 ## Journal og regler fra Vibetrad (opfølgning efter handel)
 
 Vibetrad-siden sender to ting mere med i `VT_PORTFOLIO` (Ugerapport → Opsætning → Kopiér VT_PORTFOLIO): `rules` (investorens egne regler fra Plan: loft pr. aktie, trim-regel, kill-frist, revurderingsgrænse, rebalanceringsmåneder og fri tekst) og `journal` (op til 40 beslutninger fra Journal/Handelstjek med dato, handling, tese, kill-kriterie, opfølgningsdato, status planlagt/udført og beløb). `load_portfolio` renser begge (tekst afkortes, datoer valideres, ukendte felter ignoreres), `portfolio_text` skriver dem ind i alle teams' porteføljetekst, og CIO'en får instruktionen "Opfølgning på journalen": én linje pr. post om tesen holder, om kill-kriteriet er ramt, og hvad der bør ske – med forskel på god beslutning og godt udfald. Planlagte handler vurderes som "bør handlen stadig gennemføres?". Ingen af delene når GitHub-loggen.
@@ -284,7 +288,7 @@ Den skriver kun `results/canary.json` (offentligt: status, de enkelte tjek med n
 
 ```bash
 pip install "cryptography>=42" pyyaml pytest pandas
-python -m pytest -q                      # 241 tests (integrationstestene for EODHD og Vibe-Trading-rettelserne kører kun, hvor vibe-trading-ai er installeret)
+python -m pytest -q                      # 244 tests (integrationstestene for EODHD og Vibe-Trading-rettelserne kører kun, hvor vibe-trading-ai er installeret)
 node tests/decrypt_webcrypto.mjs results/latest.enc.json 'adgangsfrase'   # dekrypterer en kuvert med WebCrypto præcis som Vibetrad-siden (testene bruger den, når node findes)
 VT_PORTFOLIO="$(cat runner/portfolio.example.json)" VT_RESULTS_PASSPHRASE=0123456789abcdef \
   python runner/run_week.py --dry-run --event workflow_dispatch --results /tmp/vt-results

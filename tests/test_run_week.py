@@ -131,6 +131,71 @@ def test_journal_and_rules_reach_the_cio_but_junk_does_not():
     assert rw.load_portfolio(json.dumps(dict(PORTFOLIO, rules=42, journal="nej")))["journal"] == []
 
 
+CASH_ONLY = {"account": "ISK Nordnet", "currency": "SEK", "holdings": [], "cash_sek": 40092.87, "monthly_deposit_sek": 20000,
+             "mandate": {"horizon_years": 5, "max_drawdown_pct": 50, "universe": "frit", "single_stock_cap_pct": 20},
+             "rules": "Loft 20 % pr. aktie."}
+
+
+def test_cash_only_portfolio_with_mandate():
+    with pytest.raises(rw.PortfolioError, match="kontant"):
+        rw.load_portfolio('{"holdings": []}')
+    p = rw.load_portfolio(json.dumps(CASH_ONLY))
+    assert p["holdings"] == [] and p["cash_sek"] == 40092.87
+    assert p["mandate"] == {"horizon_years": 5, "max_drawdown_pct": 50, "universe": "frit", "single_stock_cap_pct": 20, "objective": None}
+    txt = rw.portfolio_text(p)
+    assert "Ingen værdipapirer – alt står kontant" in txt and "Mandat: horisont 5 år" in txt and "op til 50 %" in txt
+    assert "frit: fonde, ETF'er og enkeltaktier" in txt and "loft 20 % pr. enkeltaktie" in txt
+    # grænser og ukendt univers
+    q = rw.load_portfolio(json.dumps(dict(CASH_ONLY, mandate={"horizon_years": 99, "max_drawdown_pct": 1, "universe": "alt", "single_stock_cap_pct": 500, "objective": " x " * 200})))
+    assert q["mandate"]["horizon_years"] == 40 and q["mandate"]["max_drawdown_pct"] == 5 and q["mandate"]["universe"] == "kerne+satellit"
+    assert q["mandate"]["single_stock_cap_pct"] == 100 and len(q["mandate"]["objective"]) == 300
+    assert rw.load_portfolio(json.dumps(dict(CASH_ONLY, mandate="nej")))["mandate"] is None
+    assert rw.cost_weights(p) == [] and rw.free_cash(p) == pytest.approx(40092.87)
+
+
+def test_strategy_plan_seven_teams_and_mandate_in_goals(monkeypatch):
+    monkeypatch.delenv("VT_SKIP_PRESETS", raising=False)
+    p = rw.load_portfolio(json.dumps(CASH_ONLY))
+    ref = rw.now_sto("2026-10-21T12:00")
+    plan = rw.build_plan(p, ref, rw.week_window(ref), max_swarms=7, plan_kind="fuld")  # uden beholdning → strategi
+    assert [s["preset"] for s in plan] == ["macro_strategy_forum", "sector_rotation_team", "etf_allocation_desk", "fund_selection_panel",
+                                           "equity_research_team", "risk_committee", "portfolio_review_board"]
+    assert plan[-1]["cio"] and "Byg én samlet investeringsstrategi fra bunden" in plan[-1]["vars"]["goal"]
+    for st in plan[:-1]:
+        v = " ".join(str(x) for x in st["vars"].values())
+        assert "40 093 SEK kontant nu" in v and "20 000 SEK" in v and "horisont 5 år" in v and "op til 50 %" in v, st["preset"]
+    assert "5–8 vækstaktier" in plan[4]["vars"]["goal"] and "hver højst 20 %" in plan[4]["vars"]["goal"]
+    assert "ACWI.US" in plan[5]["vars"]["goal"] and "tålte fald på 50 %" in plan[5]["vars"]["goal"]
+    # kun fonde: idéjagten bliver en temasøgning; strategi kan vælges eksplicit med beholdning
+    q = rw.load_portfolio(json.dumps(dict(CASH_ONLY, mandate=dict(CASH_ONLY["mandate"], universe="kun fonde"))))
+    plan2 = rw.build_plan(q, ref, rw.week_window(ref), max_swarms=7, plan_kind="strategi")
+    assert "tillader ikke enkeltaktier" in plan2[4]["vars"]["goal"]
+    plan3 = rw.build_plan(rw.load_portfolio(json.dumps(PORTFOLIO)), ref, rw.week_window(ref), max_swarms=7, plan_kind="strategi")
+    assert [s["preset"] for s in plan3][0] == "macro_strategy_forum" and len(plan3) == 7
+    # max_swarms under 7 beholder CIO'en
+    assert [s["preset"] for s in rw.build_plan(p, ref, rw.week_window(ref), max_swarms=4, plan_kind="strategi")][-1] == "portfolio_review_board"
+    # presets findes i Vibe-Trading, og alle krævede variabler er sat
+    try:
+        from src.swarm.presets import load_preset
+    except Exception:
+        pytest.skip("vibe-trading-ai ikke installeret")
+    for st in plan:
+        spec = load_preset(st["preset"])
+        for var in spec.get("variables", []):
+            if var.get("required"):
+                assert str(st["vars"].get(var["name"], "")).strip(), (st["preset"], var["name"])
+
+
+def test_dry_run_strategy_from_cash(tmp_path):
+    p = run_main(tmp_path, "--event", "workflow_dispatch", "--now", "2026-10-21T12:00", VT_PORTFOLIO=json.dumps(CASH_ONLY), VT_PLAN="strategi")
+    assert p.returncode == 0, p.stderr
+    log = p.stdout + p.stderr
+    assert "Plan: Makrostrategi (5 år), Sektorer og temaer, ETF-allokering, Fondsvalg (ISK-kerne), Idéjagt uden for tech, Risikoudvalg, Porteføljegennemgang (CIO)" in log
+    assert "Resultat: ok · 7/7 swarms" in log and "40 093" not in log and "40092" not in log
+    data = rw.decrypt(json.loads((tmp_path / "results" / "latest.enc.json").read_text()), PASS)
+    assert data["totals"]["plan_kind"] == "strategi" and data["portfolio"]["holdings"] == [] and len(data["runs"]) == 7
+
+
 # --- plan ------------------------------------------------------------------
 def presets(plan):
     return [s["preset"] for s in plan]

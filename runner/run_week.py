@@ -68,6 +68,8 @@ PRESET_LABELS = {
     "value_investing_committee": "Værdikomité (Buffett/Munger m.fl.)",
     "equity_research_team": "Idéjagt uden for tech",
     "fundamental_research_team": "Fundamental analyse",
+    "macro_strategy_forum": "Makrostrategi (5 år)",
+    "sector_rotation_team": "Sektorer og temaer",
 }
 
 # Ekstra Vibe-Trading-skills, der lægges på bestemte agenter (agent-id → skills).
@@ -105,6 +107,8 @@ EXTRA_TOOLS = {
     "etf_allocation_desk": {"*": ["etf_holdings", "get_eodhd_data"]},
     "fund_selection_panel": {"*": ["get_eodhd_data"]},
     "technical_analysis_panel": {"*": ["get_eodhd_data"]},
+    "macro_strategy_forum": {"*": ["get_macro_series", "get_eodhd_data"]},
+    "sector_rotation_team": {"*": ["get_eodhd_data", "etf_holdings"]},
 }
 DATA_GUIDANCE = """
 
@@ -227,6 +231,37 @@ The investor's base currency is SEK with mostly USD assets: replace China/CNY/HK
 USD/SEK and EUR/SEK. FX exposure can only be changed through weights, diversification or currency-hedged UCITS share
 classes, never derivatives.
 """},
+    "macro_strategy_forum": {
+        "domestic_economist": """
+
+## Vibetrad
+The investor's "domestic" economy is Sweden inside the EU, not China: replace PBOC/property-cycle sections with the
+Riksbank, the ECB, Swedish inflation (CPIF), SEK (USD/SEK, EUR/SEK) and the Nordic cycle. Use `get_eodhd_data`
+(economic calendar, SE10Y.GBOND/DE10Y.GBOND, FX) and `get_macro_series` (FRED) with at most 6 tool calls. Never mention
+A-shares, Stock Connect or CNY.
+""",
+        "*": """
+
+## Vibetrad
+Horizon is strategic (years), not monthly tactics: the deliverable is which asset classes, regions, factors and sectors a
+long-only equity investor in SEK should overweight for the horizon in the goal, with the two or three scenarios that
+would change that view. No derivatives, no leverage, no China A-share framing.
+"""},
+    "sector_rotation_team": {
+        "flow_analyst": """
+
+## Vibetrad
+Northbound/Stock Connect, main-force and margin data do not exist for US, European and Nordic markets: say so in one
+line and use `get_eodhd_data` (sector ETF prices and news sentiment) and `etf_holdings` on US sector ETFs as proxies
+(XLK, XLV, XLF, XLI, XLE, XLY, SMH, IWM as look-through only). At most 6 tool calls.
+""",
+        "rotation_strategist": """
+
+## Vibetrad
+The investor rebalances a few times a year, never monthly: deliver strategic sector and theme tilts for the horizon in
+the goal with UCITS ETFs buyable at Nordnet as the vehicle (US tickers only as proxies), and a short backtest only on
+US proxies (never Nordic/European symbols in `backtest`).
+"""},
     "fund_selection_panel": {"*": """
 
 ## Vibetrad
@@ -337,6 +372,18 @@ TRANSITION_GOAL = (
     "store kursudsving) der bør udløse en revurdering."
 )
 WEIGHT_POLICIES = ("limit", "target")
+# Strategikørsel (Kaspers valg 20/10/2026): alt er solgt, og agenterne skal bygge porteføljen op fra kontant.
+STRATEGY_GOAL = (
+    "Byg én samlet investeringsstrategi fra bunden: alt står kontant. Mandatet (horisont, tålt fald, univers, loft pr. "
+    "aktie) står i porteføljeteksten og skal overholdes. Lever: 1) målallokering i procent pr. byggesten (kerne, "
+    "satellitter, evt. kontant) med ét konkret instrument pr. byggesten, der kan købes hos Nordnet på en svensk ISK "
+    "(UCITS-fonde/ETF'er med ISIN eller navn; enkeltaktier med ticker), 2) hvad der købes for kontanten nu, og hvad der "
+    "venter – med begrundelse, hvis noget skal spredes over flere måneder, 3) hvordan hvert månedligt indskud fordeles, "
+    "4) forventet afkastinterval og største realistiske fald for hele porteføljen over horisonten (med historiske "
+    "kriser som reference – ingen løfter), 5) regler: rebalancering, hvornår en satellit sælges, og hvad der får dig til "
+    "at ændre strategien, 6) en tabel 'Uenigheder mellem teams'. Ingen gearing, ingen derivater, ingen produkter, en "
+    "privatkunde ikke kan købe hos Nordnet."
+)
 LANG_SUFFIX = (
     " Skriv hele rapporten på dansk. Brug datoformat DD/MM/YYYY og angiv beløb i SEK, "
     "med lokal valuta i parentes hvor relevant. Dette er research, ikke personlig rådgivning, "
@@ -466,8 +513,10 @@ def load_portfolio(raw: str | None) -> dict:
         p = json.loads(raw)
     except json.JSONDecodeError as exc:  # beskeden må ikke citere indholdet
         raise PortfolioError(f"VT_PORTFOLIO er ikke gyldig JSON (linje {exc.lineno}, kolonne {exc.colno})") from None
-    if not isinstance(p, dict) or not isinstance(p.get("holdings"), list) or not p["holdings"]:
-        raise PortfolioError("VT_PORTFOLIO skal have en ikke-tom liste 'holdings'")
+    if not isinstance(p, dict) or not isinstance(p.get("holdings"), list):
+        raise PortfolioError("VT_PORTFOLIO skal have en liste 'holdings'")
+    if not p["holdings"] and not (isinstance(p.get("cash_sek"), (int, float)) and p["cash_sek"] > 0):
+        raise PortfolioError("VT_PORTFOLIO skal have en ikke-tom liste 'holdings' eller kontant (cash_sek) at investere")
     try:
         return _clean_portfolio(p)
     except PortfolioError:
@@ -553,7 +602,36 @@ def _clean_portfolio(p: dict) -> dict:
     # Regler fra Vibetrad → Plan (exit, loft, rebalancering): tekst, som agenterne skal respektere.
     rules = p.get("rules")
     p["rules"] = re.sub(r"\s+", " ", str(rules)).strip()[:1500] if isinstance(rules, str) and rules.strip() else None
+    # Mandat (Vibetrad → Plan): horisont, tålt fald, univers og loft pr. aktie – styrer strategikørslen.
+    m = p.get("mandate")
+    if isinstance(m, dict):
+        uni = str(m.get("universe") or "").strip().lower()
+        p["mandate"] = {
+            "horizon_years": int(min(max(_num(m.get("horizon_years"), "mandate.horizon_years", default=5.0, allow_none=True) or 5.0, 1), 40)),
+            "max_drawdown_pct": int(min(max(_num(m.get("max_drawdown_pct"), "mandate.max_drawdown_pct", default=30.0, allow_none=True) or 30.0, 5), 90)),
+            "universe": uni if uni in MANDATE_UNIVERSES else "kerne+satellit",
+            "single_stock_cap_pct": int(min(max(_num(m.get("single_stock_cap_pct"), "mandate.single_stock_cap_pct", default=10.0, allow_none=True) or 10.0, 1), 100)),
+            "objective": re.sub(r"\s+", " ", str(m.get("objective") or "")).strip()[:300] or None,
+        }
+    else:
+        p["mandate"] = None
     return p
+
+
+MANDATE_UNIVERSES = {
+    "kerne+satellit": "UCITS-fonde/ETF'er som kerne og enkeltaktier som satellitter inden for loftet pr. aktie",
+    "kun fonde": "kun UCITS-fonde og -ETF'er, ingen enkeltaktier",
+    "frit": "frit: fonde, ETF'er og enkeltaktier, også større positioner inden for loftet pr. aktie",
+}
+
+
+def mandate_text(p: dict) -> str:
+    m = p.get("mandate")
+    if not m:
+        return ""
+    return (f"Mandat: horisont {m['horizon_years']} år; investoren tåler et midlertidigt fald på op til {m['max_drawdown_pct']} % "
+            f"af porteføljen uden at sælge; univers: {MANDATE_UNIVERSES[m['universe']]}; loft {m['single_stock_cap_pct']} % "
+            f"pr. enkeltaktie" + (f"; mål: {m['objective']}" if m.get("objective") else "") + ".")
 
 
 _AMOUNT = r"(?P<amt>(?:\d{1,3}(?:[ .\u00a0\u202f]\d{3})+|\d+)(?:[,.]\d{1,2})?)(?!\d)"
@@ -609,6 +687,8 @@ def cost_weights(p: dict) -> list[dict]:
 
 def portfolio_text(p: dict) -> str:
     lines = [f"Konto: {p['account']} (svensk ISK, basisvaluta {p['currency']}). Opgjort {p.get('as_of') or 'seneste'}."]
+    if not p["holdings"]:
+        lines.append("Ingen værdipapirer – alt står kontant og skal investeres efter mandatet.")
     for h in p["holdings"]:
         bits = [f"{h['name']} ({h['ticker']})"]
         if h["qty"] is not None:
@@ -639,6 +719,8 @@ def portfolio_text(p: dict) -> str:
                  "men skriv 'kurtage og valutaveksling efter din Nordnet-klasse'.")
     if p.get("framework"):
         lines.append(f"Investeringsramme: {p['framework']}")
+    if mandate_text(p):
+        lines.append(mandate_text(p))
     if p.get("rules"):
         lines.append(f"Investorens egne regler (Vibetrad → Plan), som alle forslag skal respektere: {p['rules']}")
     if p.get("journal"):
@@ -757,6 +839,8 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
                reports: list[dict] | None = None, force_risk: bool = False,
                history: list[dict] | None = None, by_date: bool | None = None) -> list[dict]:
     """Ugens plan. Rækkefølge: risiko → dybdeanalyser → CIO (som får de andres konklusioner)."""
+    if plan_kind == "strategi" or not p["holdings"]:  # alt kontant: byg porteføljen fra bunden
+        return strategy_plan(p, week, max_swarms=max_swarms)
     goal = (p.get("goal") or (TRANSITION_GOAL if p.get("weight_policy") == "target" else DEFAULT_GOAL)).strip()
     ptxt = portfolio_text(p)
     period = f"{dmy(dt.date.fromisoformat(week['from']))}–{dmy(dt.date.fromisoformat(week['to']))}"
@@ -877,6 +961,62 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
         skip.discard("risk_committee")
     plan = [s for s in plan if s["preset"] not in skip or s.get("cio")]
     if len(plan) > max(1, max_swarms):  # behold altid CIO'en
+        plan = plan[:max(1, max_swarms) - 1] + [plan[-1]]
+    return plan
+
+
+def strategy_plan(p: dict, week: dict, *, max_swarms: int = 7) -> list[dict]:
+    """Strategikørsel: syv teams bygger én strategi fra kontant. CIO'en samler (kører sidst)."""
+    m = p.get("mandate") or {"horizon_years": 5, "max_drawdown_pct": 30, "universe": "kerne+satellit", "single_stock_cap_pct": 10}
+    ptxt = portfolio_text(p)
+    period = f"{dmy(dt.date.fromisoformat(week['from']))}–{dmy(dt.date.fromisoformat(week['to']))}"
+    iso_week = dt.date.fromisoformat(week["from"]).isocalendar().week
+    cash = float(p.get("cash_sek") or 0)
+    dep = p.get("monthly_deposit_sek")
+    money = (f"{cash:,.0f} SEK kontant nu" + (f" og ca. {dep:,.0f} SEK i nye indskud om måneden" if dep else "")).replace(",", " ")
+    H, DD, CAP = m["horizon_years"], m["max_drawdown_pct"], m["single_stock_cap_pct"]
+    uni = MANDATE_UNIVERSES[m["universe"]]
+    nordnet = ("Kun instrumenter, en privatkunde kan købe hos Nordnet på en svensk ISK: UCITS-fonde og -ETF'er (europæisk "
+               "notering, ISIN) og enkeltaktier på nordiske, europæiske og amerikanske børser. Amerikanske ETF'er som ACWI.US "
+               "er kun dataproxy. Ingen gearing, derivater eller certifikater. ")
+    base = (f"Investoren har solgt alt og har {money}. Mandat: horisont {H} år, maksimér væksten, tåler et midlertidigt fald "
+            f"på op til {DD} % uden at sælge, univers: {uni}, loft {CAP} % pr. enkeltaktie. {nordnet}")
+    plan: list[dict] = [
+        {"preset": "macro_strategy_forum", "reason": "Strategi: makro og aktivklasser for horisonten",
+         "vars": {"market": "globalt aktiemarked (USA, Europa, Norden, emerging markets) for en svensk investor i SEK. "
+                            + base + "Skriv på dansk, beløb i SEK.",
+                  "horizon": f"{H} år (strategisk), med 12-måneders udsigt som delmål"}},
+        {"preset": "sector_rotation_team", "reason": "Strategi: sektorer og temaer med medvind over horisonten",
+         "vars": {"market": "USA, Europa og Norden (UCITS-sektor- og tema-ETF'er som instrument)",
+                  "goal": base + f"Find de 3–5 sektorer/temaer, der bør overvægtes de næste {H} år, med UCITS-ETF pr. tema. "
+                                 "Skriv på dansk, beløb i SEK."}},
+        {"preset": "etf_allocation_desk", "reason": "Strategi: kerneallokering i ETF'er",
+         "vars": {"risk_profile": f"aggressiv vækst, {H} års horisont, tåler fald på {DD} %, ingen gearing, svensk ISK i SEK hos Nordnet",
+                  "market": "globale UCITS-ETF'er, der kan købes via Nordnet. " + base
+                            + "Byg kernen (region, størrelse, faktorer som momentum/kvalitet/small cap) med vægte i procent. Skriv på dansk, beløb i SEK."}},
+        {"preset": "fund_selection_panel", "reason": "Strategi: konkrete fonde og ETF'er på Nordnet",
+         "vars": {"fund_type": "aktiefonde og UCITS-ETF'er på Nordnet ISK: globale indeks, USA, Europa, Norden, small cap, emerging markets, tema/sektor",
+                  "goal": base + "Vælg 3–6 konkrete fonde/ETF'er (navn og ISIN) med omkostninger, tracking og risiko, der passer til kernen. Skriv på dansk, beløb i SEK."}},
+        {"preset": "equity_research_team", "reason": "Strategi: enkeltaktier som satellitter" if m["universe"] != "kun fonde" else "Strategi: idéjagt (kun fonde – aktier som reference)",
+         "vars": {"market": "USA, Europa og Norden (Nasdaq, NYSE, Xetra, Stockholm, København, Oslo, Helsinki)",
+                  "goal": base + (f"Find 5–8 vækstaktier med {H} års medvind, der kan udgøre satellitterne (hver højst {CAP} %), med tese, "
+                                  "kill-kriterie og hvad der skal være sandt om 5 år. " if m["universe"] != "kun fonde" else
+                                  "Mandatet tillader ikke enkeltaktier: find i stedet de temaer og selskaber, som fondene bør give eksponering til. ")
+                          + "Skriv på dansk, DD/MM/YYYY, beløb i SEK."}},
+        {"preset": "risk_committee", "reason": "Strategi: stresstest af den foreslåede portefølje",
+         "vars": {"goal": (f"Stresstest en vækstportefølje for en svensk investor med {money} (periode {period}):\n{ptxt}\n"
+                           f"Reference-portefølje (byg den selv af data-proxies med vægte): 60 % globalt indeks (ACWI.US), 15 % small cap "
+                           f"(IWM.US), 10 % emerging markets (EEM.US), 15 % tema/enkeltaktier (QQQ.US som proxy). Brug portfolio_risk_xray og "
+                           f"quantlib_call. Regn tabet i SEK i fire scenarier: 1) globalt aktiefald −30 %, 2) 2008-lignende fald −50 %, "
+                           f"3) USD/SEK −10 %, 4) amerikansk tech −40 %. Sig, om mandatets tålte fald på {DD} % holder, og hvad der "
+                           "sænker halerisikoen uden at opgive vækstmålet." + LANG_SUFFIX)}},
+        {"preset": "portfolio_review_board", "reason": "Strategi: CIO'en samler teams til én strategi",
+         "vars": {"portfolio": ptxt, "review_period": f"Uge {iso_week}: {period} (strategikørsel)", "goal": STRATEGY_GOAL + LANG_SUFFIX},
+         "cio": True},
+    ]
+    skip = {x.strip() for x in os.environ.get("VT_SKIP_PRESETS", "").split(",") if x.strip()}
+    plan = [s for s in plan if s["preset"] not in skip or s.get("cio")]
+    if len(plan) > max(1, max_swarms):
         plan = plan[:max(1, max_swarms) - 1] + [plan[-1]]
     return plan
 
@@ -1970,6 +2110,8 @@ def main(argv: list[str] | None = None) -> int:
         history = json.loads((results / "index.json").read_text("utf-8")).get("weeks", [])
     except Exception:
         history = []
+    if plan_kind == "strategi" or not portfolio["holdings"]:  # strategikørslen har syv faste teams
+        max_swarms = max(max_swarms, 7)
     plan = build_plan(portfolio, ref, week, max_swarms=max_swarms, plan_kind=plan_kind,
                       force_risk=args.force_risk, reports=reports, history=history,
                       by_date=(args.event == "schedule"))
