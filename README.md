@@ -91,11 +91,14 @@ Nøglen fjernes fra alle fejlbeskeder og logs. En afvist nøgle (HTTP 401) stopp
 
 **I codespacet:**
 ```bash
-python ~/vibetrad-runner/tools/vt_med_eodhd.py serve --port 8899      # web-UI med EODHD
+python ~/vibetrad-runner/tools/vt_med_eodhd.py serve --port 8899      # web-UI med EODHD og Vibetrad-regler
+python ~/vibetrad-runner/tools/vt_med_eodhd.py serve --port 8899 --portfolio-file ~/vt_portfolio.json   # + portefølje og mandat
+python ~/vibetrad-runner/tools/vt_med_eodhd.py nulstil                # fjern Vibetrad-presets (Vibe-Tradings egne igen)
 python ~/vibetrad-runner/tools/vt_med_eodhd.py status                 # hvad er koblet på?
 python ~/vibetrad-runner/tools/vt_med_eodhd.py nøgle                  # virker EODHD-nøglen? (viser abonnement og dagens kald, aldrig nøglen)
 claude mcp add vibe-trading -- python ~/vibetrad-runner/tools/vt_med_eodhd.py mcp   # Claude Code
 ```
+Web-UI, terminal og MCP i codespacet får samme regler som ugekørslen (siden 20/10/2026): presets uden shell, ISK/Nordnet/UCITS-rammer, team-reglerne (ingen Kina/A-aktie-sektioner, ingen optioner), EODHD- og FRED-guides og alle Vibe-Trading-rettelser. Startlinjen viser fx `Vibetrad-regler: 30 presets tilpasset, 6/6 rettelser, portefølje og mandat med`. `--portfolio-file` tager samme JSON som VT_PORTFOLIO (gem den kun i codespacet, aldrig i repoet). `VT_VANILLA=1` starter uden reglerne. Uden dette arbejdede en swarm startet i browseren som rå 0.1.16: shell-værktøjer, kinesiske makro-sektioner og forslag om ETF'er, der ikke kan købes på en ISK.
 Nøglen gives som Codespaces-secret `EODHD_API_KEY` (github.com → Settings → Codespaces → Secrets, med adgang til codespacets repo, og genstart codespacet). Alternativt gemmes den i en fil, kun du kan læse: `read -rs -p 'EODHD-nøgle: ' K && mkdir -p ~/.config/vibetrad && printf %s "$K" > ~/.config/vibetrad/eodhd_key && chmod 600 ~/.config/vibetrad/eodhd_key && unset K && echo` (nøglen vises ikke, mens du indsætter den).
 
 ## Makro for Europa og Norden (EODHD)
@@ -288,7 +291,7 @@ Den skriver kun `results/canary.json` (offentligt: status, de enkelte tjek med n
 
 ```bash
 pip install "cryptography>=42" pyyaml pytest pandas
-python -m pytest -q                      # 244 tests (integrationstestene for EODHD og Vibe-Trading-rettelserne kører kun, hvor vibe-trading-ai er installeret)
+python -m pytest -q                      # 248 tests (integrationstestene for EODHD og Vibe-Trading-rettelserne kører kun, hvor vibe-trading-ai er installeret)
 node tests/decrypt_webcrypto.mjs results/latest.enc.json 'adgangsfrase'   # dekrypterer en kuvert med WebCrypto præcis som Vibetrad-siden (testene bruger den, når node findes)
 VT_PORTFOLIO="$(cat runner/portfolio.example.json)" VT_RESULTS_PASSPHRASE=0123456789abcdef \
   python runner/run_week.py --dry-run --event workflow_dispatch --results /tmp/vt-results
