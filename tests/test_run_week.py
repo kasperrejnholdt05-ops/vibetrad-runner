@@ -161,6 +161,7 @@ def test_strategy_plan_seven_teams_and_mandate_in_goals(monkeypatch):
     assert [s["preset"] for s in plan] == ["macro_strategy_forum", "sector_rotation_team", "etf_allocation_desk", "fund_selection_panel",
                                            "equity_research_team", "risk_committee", "portfolio_review_board"]
     assert plan[-1]["cio"] and "Byg én samlet investeringsstrategi fra bunden" in plan[-1]["vars"]["goal"]
+    assert "## Målportefølje" in plan[-1]["vars"]["goal"] and "| Instrument | Ticker | ISIN | Type | Målvægt % | Kursproxy |" in plan[-1]["vars"]["goal"]
     for st in plan[:-1]:
         v = " ".join(str(x) for x in st["vars"].values())
         assert "40 093 SEK kontant nu" in v and "20 000 SEK" in v and "horisont 5 år" in v and "op til 50 %" in v, st["preset"]

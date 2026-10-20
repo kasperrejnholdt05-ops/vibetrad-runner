@@ -382,7 +382,13 @@ STRATEGY_GOAL = (
     "4) forventet afkastinterval og største realistiske fald for hele porteføljen over horisonten (med historiske "
     "kriser som reference – ingen løfter), 5) regler: rebalancering, hvornår en satellit sælges, og hvad der får dig til "
     "at ændre strategien, 6) en tabel 'Uenigheder mellem teams'. Ingen gearing, ingen derivater, ingen produkter, en "
-    "privatkunde ikke kan købe hos Nordnet."
+    "privatkunde ikke kan købe hos Nordnet. Foretræk instrumenter med en børsticker (ETF'er og aktier), så de kan følges "
+    "dagligt; en fond uden børsticker skal have ISIN og en børsnoteret ETF som kursproxy.\n\n"
+    "Afslut rapporten med afsnittet '## Målportefølje' og præcis denne tabel – Vibetrad læser den automatisk:\n"
+    "| Instrument | Ticker | ISIN | Type | Målvægt % | Kursproxy |\n|---|---|---|---|---|---|\n"
+    "Én række pr. instrument (også kontant, hvis noget skal stå kontant). Ticker i formatet SYMBOL.BØRS "
+    "(fx NVDA.US, NOVO-B.CO, IWDA.AS, SXR8.XETRA); tom for en fond uden børsticker. Type er aktie, etf, fond eller kontant. "
+    "Målvægt % er et tal uden %-tegn, og vægtene summerer til 100. Kursproxy er kun udfyldt for fonde uden ticker."
 )
 LANG_SUFFIX = (
     " Skriv hele rapporten på dansk. Brug datoformat DD/MM/YYYY og angiv beløb i SEK, "
