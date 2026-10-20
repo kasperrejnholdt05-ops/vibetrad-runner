@@ -255,3 +255,20 @@ def test_key_file_fallback_for_codespace(monkeypatch, tmp_path):
     assert eo.api_key() == "fil-noegle-123456"
     monkeypatch.setenv("EODHD_API_KEY", "env-vinder-123456")
     assert eo.api_key() == "env-vinder-123456"
+
+
+def test_fundamentals_for_etf_include_isin_and_ongoing_charge():
+    seen: list = []
+    etf = {"ETF_Data::ISIN": "IE00BK5BQT80", "ETF_Data::Ongoing_Charge": 0.141, "ETF_Data::Domicile": "NA",
+           "ETF_Data::World_Regions": {"North America": {"Equity_%": 63.2}, "Latin America": {"Equity_%": 0.9}},
+           "ETF_Data::Top_10_Holdings": {"NVDA.US": {"Name": "NVIDIA Corporation", "Assets_%": 4.9133}}}
+    c = eo.EodhdClient(KEY, opener=opener_for({
+        "ETF_Data": etf,
+        "/fundamentals/VWCE.XETRA": {"General": {"Code": "VWCE", "Type": "ETF", "Name": "Vanguard FTSE All-World"}},
+    }, seen), sleep=lambda s: None)
+    f = json.loads(eo._tool_execute(c, action="fundamentals", symbol="VWCE.DE"))["data"]
+    assert f["General"]["Type"] == "ETF" and f["ETF_Data"]["ISIN"] == "IE00BK5BQT80"
+    assert f["ETF_Data"]["Ongoing_Charge"] == "0.14 %" and "Domicile" not in f["ETF_Data"]
+    assert f["ETF_Data"]["World_Regions"] == {"North America": 63.2}
+    assert f["ETF_Data"]["Top_10_Holdings"] == {"NVIDIA Corporation (NVDA.US)": 4.91}
+    assert all("VWCE.XETRA" in u for u in seen) and len(seen) == 2

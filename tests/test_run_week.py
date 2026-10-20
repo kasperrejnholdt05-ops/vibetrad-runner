@@ -131,7 +131,7 @@ def test_journal_and_rules_reach_the_cio_but_junk_does_not():
     assert rw.load_portfolio(json.dumps(dict(PORTFOLIO, rules=42, journal="nej")))["journal"] == []
 
 
-CASH_ONLY = {"account": "ISK Nordnet", "currency": "SEK", "holdings": [], "cash_sek": 40092.87, "monthly_deposit_sek": 20000,
+CASH_ONLY = {"account": "ISK Nordnet", "currency": "SEK", "holdings": [], "cash_sek": 41234.56, "monthly_deposit_sek": 15000,
              "mandate": {"horizon_years": 5, "max_drawdown_pct": 50, "universe": "frit", "single_stock_cap_pct": 20},
              "rules": "Loft 20 % pr. aktie."}
 
@@ -140,7 +140,7 @@ def test_cash_only_portfolio_with_mandate():
     with pytest.raises(rw.PortfolioError, match="kontant"):
         rw.load_portfolio('{"holdings": []}')
     p = rw.load_portfolio(json.dumps(CASH_ONLY))
-    assert p["holdings"] == [] and p["cash_sek"] == 40092.87
+    assert p["holdings"] == [] and p["cash_sek"] == 41234.56
     assert p["mandate"] == {"horizon_years": 5, "max_drawdown_pct": 50, "universe": "frit", "single_stock_cap_pct": 20, "objective": None}
     txt = rw.portfolio_text(p)
     assert "Ingen værdipapirer – alt står kontant" in txt and "Mandat: horisont 5 år" in txt and "op til 50 %" in txt
@@ -150,7 +150,7 @@ def test_cash_only_portfolio_with_mandate():
     assert q["mandate"]["horizon_years"] == 40 and q["mandate"]["max_drawdown_pct"] == 5 and q["mandate"]["universe"] == "kerne+satellit"
     assert q["mandate"]["single_stock_cap_pct"] == 100 and len(q["mandate"]["objective"]) == 300
     assert rw.load_portfolio(json.dumps(dict(CASH_ONLY, mandate="nej")))["mandate"] is None
-    assert rw.cost_weights(p) == [] and rw.free_cash(p) == pytest.approx(40092.87)
+    assert rw.cost_weights(p) == [] and rw.free_cash(p) == pytest.approx(41234.56)
 
 
 def test_strategy_plan_seven_teams_and_mandate_in_goals(monkeypatch):
@@ -161,10 +161,20 @@ def test_strategy_plan_seven_teams_and_mandate_in_goals(monkeypatch):
     assert [s["preset"] for s in plan] == ["macro_strategy_forum", "sector_rotation_team", "etf_allocation_desk", "fund_selection_panel",
                                            "equity_research_team", "risk_committee", "portfolio_review_board"]
     assert plan[-1]["cio"] and "Byg én samlet investeringsstrategi fra bunden" in plan[-1]["vars"]["goal"]
-    assert "## Målportefølje" in plan[-1]["vars"]["goal"] and "| Instrument | Ticker | ISIN | Type | Målvægt % | Kursproxy |" in plan[-1]["vars"]["goal"]
+    # Målportefølje-tabellen er kun CIO'ens (system-prompt) og står øverst; analytikerne får hver deres opgave
+    assert "## Målportefølje" not in plan[-1]["vars"]["goal"]
+    extra = plan[-1]["system_extra"]
+    cio = extra["chief_investment_officer"]
+    assert "## Målportefølje" in cio and rw.TARGET_TABLE_HEAD in cio and "Køb fra" in rw.TARGET_TABLE_HEAD
+    assert cio.index("## Resumé") < cio.index("## Målportefølje") < cio.index("3. Derefter resten")
+    assert "hele stk" in cio and "egen målte fald" in cio and "Norden" in cio
+    assert set(extra) == {"chief_investment_officer", "attribution_analyst", "risk_inspector", "execution_analyst"}
+    for role in ("attribution_analyst", "risk_inspector", "execution_analyst"):
+        assert "lav ikke din egen tabel 'Målportefølje'" in extra[role] and "{task}" not in extra[role]
+    assert "enkeltaktier falder ofte mere end indekset" in plan[5]["vars"]["goal"]
     for st in plan[:-1]:
         v = " ".join(str(x) for x in st["vars"].values())
-        assert "40 093 SEK kontant nu" in v and "20 000 SEK" in v and "horisont 5 år" in v and "op til 50 %" in v, st["preset"]
+        assert "41 235 SEK kontant nu" in v and "15 000 SEK" in v and "horisont 5 år" in v and "op til 50 %" in v, st["preset"]
     assert "5–8 vækstaktier" in plan[4]["vars"]["goal"] and "hver højst 20 %" in plan[4]["vars"]["goal"]
     assert all("gælder mandatet" in " ".join(str(x) for x in st["vars"].values()) for st in plan[:5])
     assert "ACWI.US" in plan[5]["vars"]["goal"] and "tålte fald på 50 %" in plan[5]["vars"]["goal"]
@@ -194,7 +204,7 @@ def test_dry_run_strategy_from_cash(tmp_path):
     log = p.stdout + p.stderr
     assert "Plan: Makrostrategi (5 år), Sektorer og temaer, ETF-allokering, Fondsvalg (ISK-kerne), Idéjagt: vækstaktier, Risikoudvalg, Porteføljegennemgang (CIO)" in log
     assert "Idéjagt uden for tech" not in log
-    assert "Resultat: ok · 7/7 swarms" in log and "40 093" not in log and "40092" not in log
+    assert "Resultat: ok · 7/7 swarms" in log and "41 235" not in log and "41234" not in log
     data = rw.decrypt(json.loads((tmp_path / "results" / "latest.enc.json").read_text()), PASS)
     assert data["totals"]["plan_kind"] == "strategi" and data["portfolio"]["holdings"] == [] and len(data["runs"]) == 7
     assert data["runs"][4]["label"] == "Idéjagt: vækstaktier" and data["runs"][0]["label"] == "Makrostrategi (5 år)"
@@ -1376,3 +1386,27 @@ def test_vibe_trading_prompt_and_grounding_patches(monkeypatch):
     assert "HARD LIMIT" not in text and "state your plan" not in text and "never finish with a plan" in text
     # kun symboler, der står ordret i teksten: ingen SEK.US, ISK.US, NOVO.US, PASS.US
     assert g.extract_symbols_from_user_vars({"g": "ISK i SEK: NOVO-B.CO, ACWI.US, GOOGL.US. Datatjek PASS."}) == ["ACWI.US", "GOOGL.US"]
+
+
+def test_looks_cut_catches_reports_that_end_mid_sentence():
+    body = "## Resumé\nTekst. " * 200
+    assert rw.looks_cut(body + "\nINVE-B.ST-kursen (420,95 SEK) er hentet direkte fra E")
+    assert rw.looks_cut(body + "\n| Guld (fysisk ETC) – GLD.US | 29")
+    assert not rw.looks_cut(body + "\nFaktatjek: PASS")
+    assert not rw.looks_cut(body + "\nDer er ikke afgivet ordrer.")
+    assert not rw.looks_cut(body + "\n| Kontant | | | kontant | 5 | | |")
+    assert not rw.looks_cut("kort tekst uden punktum") and not rw.looks_cut(None)
+
+
+def test_summary_and_digest_flag_cut_reports():
+    from types import SimpleNamespace as NS
+    long_ok = "## Konklusion\n" + "Fint. " * 500 + "\nFaktatjek: PASS"
+    long_cut = "## Konklusion\n" + "Fint. " * 500 + "\nhentet direkte fra E"
+    run = NS(id="r1", status="completed", total_input_tokens=1, total_output_tokens=1, final_report=long_cut,
+             agents=[NS(id="a", role="Risk Budgeter"), NS(id="b", role="Macro")],
+             tasks=[NS(id="t1", agent_id="a", status="completed", summary=long_cut, error=None),
+                    NS(id="t2", agent_id="b", status="completed", summary=long_ok, error=None)])
+    s = rw.summarize_run(run, "etf_allocation_desk", "x", rw.now_sto("2026-10-20T12:00"), 1, price_in=2, price_out=10)
+    assert s["agents_cut"] == ["Risk Budgeter"] and s["final_report_cut"] and s["tasks"][1]["cut"] is False
+    d = rw.cio_digest([s])
+    assert "Afkortet midt i teksten – resten mangler: Risk Budgeter og teamets slutrapport" in d

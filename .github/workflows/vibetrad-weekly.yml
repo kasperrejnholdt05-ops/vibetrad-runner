@@ -66,7 +66,8 @@ jobs:
       LANGCHAIN_PROVIDER: anthropic
       LANGCHAIN_MODEL_NAME: ${{ vars.VT_MODEL || 'claude-sonnet-5' }}
       ANTHROPIC_BASE_URL: https://api.anthropic.com
-      ANTHROPIC_MAX_TOKENS: "16384"
+      # Loft for ét svar inkl. tænkning. 16384 var for lidt: CIO-rapporten 20/10/2026 blev skåret midt i en sætning.
+      ANTHROPIC_MAX_TOKENS: "32000"
       VT_PLAN: ${{ inputs.plan || vars.VT_PLAN || 'fuld' }}
       VT_MAX_SWARMS: ${{ vars.VT_MAX_SWARMS || '6' }}
       VT_SCHEDULE: ${{ vars.VT_SCHEDULE || 'off' }}

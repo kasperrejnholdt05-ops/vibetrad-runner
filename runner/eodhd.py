@@ -18,6 +18,7 @@ Tre ting:
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import json
 import os
@@ -383,12 +384,38 @@ def _compact(obj: Any, limit: int = 9000) -> str:
     return json.dumps({"ok": True, "truncated": True, "data": text[:limit]}, ensure_ascii=False)
 
 
+ETF_SECTIONS = tuple(f"ETF_Data::{k}" for k in ("ISIN", "Company_Name", "Domicile", "Index_Name", "Inception_Date",
+                                                    "Ongoing_Charge", "TotalAssets", "Dividend_Paying_Frequency",
+                                                    "Holdings_Count", "World_Regions", "Top_10_Holdings"))
+
+
+def etf_brief(raw: dict) -> dict:
+    """ETF_Data::X-nøgler → kort dict (regioner over 1 %, top-10 som navn → vægt)."""
+    out: dict[str, Any] = {}
+    for k, v in (raw or {}).items():
+        if not k.startswith("ETF_Data::") or v in (None, "", "NA"):
+            continue
+        key = k.split("::", 1)[1]
+        if key == "World_Regions" and isinstance(v, dict):
+            v = {r: round(float(x.get("Equity_%") or 0), 1) for r, x in v.items()
+                 if isinstance(x, dict) and float(x.get("Equity_%") or 0) >= 1}
+        elif key == "Top_10_Holdings" and isinstance(v, dict):
+            v = {f"{x.get('Name') or c} ({c})": round(float(x.get("Assets_%") or 0), 2) for c, x in v.items() if isinstance(x, dict)}
+        elif key == "Ongoing_Charge":
+            with contextlib.suppress(TypeError, ValueError):
+                v = f"{float(v):.2f} %"
+        out[key] = v
+    return out
+
+
 TOOL_DESCRIPTION = (
     "EODHD market data (second source next to Vibe-Trading's Yahoo/yfinance). Use it to cross-check prices and for "
     "Nordic/European listings. Symbols: AAPL.US, NOVO-B.CO, INVE-B.ST, EQNR.OL, SAP.XETRA (SAP.DE also works), "
     "USDSEK.FOREX, SE10Y.GBOND/US10Y.GBOND (government bond yields). Actions: "
     "quote (symbols: delayed live price), eod (symbol, start, end: daily OHLC with adjusted close), "
-    "fundamentals (symbol: name, currency, sector, IPO date, market cap, P/E, EPS estimates, analyst target, shares), "
+    "fundamentals (symbol: name, currency, sector, IPO date, market cap, P/E, EPS estimates, analyst target, shares; for "
+    "ETFs/funds also ISIN, ongoing charge (TER), domicile, index, AUM, regions and top-10 holdings – XETRA listings as "
+    "VWCE.XETRA or VWCE.DE), "
     "earnings_calendar (symbols, start, end: report dates, BMO/AMC, EPS estimate), "
     "news (symbol or tag, start, limit up to 50, optional query = keyword filter on title/text, e.g. 'results' or "
     "'earnings date': headlines with sentiment polarity and link), "
@@ -426,6 +453,11 @@ def _tool_execute(client: EodhdClient, **kw: Any) -> str:
             data = {"General": {k: g.get(k) for k in ("Code", "Name", "Exchange", "CurrencyCode", "CountryISO", "ISIN",
                                                      "Sector", "Industry", "IPODate", "FiscalYearEnd", "UpdatedAt")},
                     **{k: f.get(k) for k in ("Highlights", "Valuation", "SharesStats", "AnalystRatings") if f.get(k)}}
+            if str(g.get("Type") or "").upper() in ("ETF", "FUND"):
+                # ETF'er og fonde har ingen Highlights/Valuation; ISIN og omkostning står i ETF_Data. 20/10/2026 skrev
+                # alle teams "ISIN/TER kunne ikke verificeres", selv om EODHD har dem (fx EXSA: DE0002635307, 0,19 %).
+                data["General"]["Type"] = g.get("Type")
+                data["ETF_Data"] = etf_brief(client.fundamentals(sym, ETF_SECTIONS))
         elif action in ("earnings", "earnings_calendar"):
             data = client.earnings(syms, start, kw.get("end") or (today + dt.timedelta(days=120)).isoformat())
         elif action == "news":

@@ -148,7 +148,7 @@ def test_canary_run_end_to_end(tmp_path):
     log = p.stdout + p.stderr
     assert "KØRER: kanariefugl" in log and "· Anthropic-nøgle og model: ok – nøglen virker, modellen claude-sonnet-5 findes" in log
     assert "Kanariefugl: " in log and KEY not in log
-    for secret in ("ZZTOP", "26743", "1342"):  # porteføljedata må aldrig nå loggen eller results/canary.json
+    for secret in ("ZZTOP", "Hemmelig", "21480"):  # porteføljedata må aldrig nå loggen eller results/canary.json
         assert secret not in log
     assert posts and posts[0][1] == KEY and posts[0][2]["model"] == "claude-sonnet-5"
     res = tmp_path / "results"
@@ -159,7 +159,7 @@ def test_canary_run_end_to_end(tmp_path):
     assert by["anthropic"]["ok"] is True and by["runtime"]["ok"] is True and by["fred"]["ok"] is None  # ingen FRED-nøgle: advarsel
     assert doc["github_run_id"] == "4242" and doc["history"][-1]["run_id"] == doc["run_id"] and doc["duration_s"] >= 0
     raw = (res / "canary.json").read_text()
-    for secret in ("ZZTOP", "26743", "1342", KEY):
+    for secret in ("ZZTOP", "Hemmelig", "21480", KEY):
         assert secret not in raw
     # uden EODHD-nøgle fejler kæden, og kørslen bliver rød (GitHub sender fejlmail)
     assert by["eodhd"]["ok"] is False and doc["status"] == "fail"

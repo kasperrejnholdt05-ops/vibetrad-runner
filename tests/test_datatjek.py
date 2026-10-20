@@ -692,7 +692,7 @@ def test_news_fetch_failure_is_visible_in_the_row():
 
 def test_cash_only_portfolio_runs_and_brief_has_no_holdings():
     # Alt solgt (Kasper 15/10/2026): datatjekket må ikke vælte på en tom beholdning, og overvågningslisten tjekkes stadig.
-    p = rw.load_portfolio(json.dumps({"holdings": [], "cash_sek": 40000.5, "monthly_deposit_sek": 20000,
+    p = rw.load_portfolio(json.dumps({"holdings": [], "cash_sek": 40000.5, "monthly_deposit_sek": 15000,
                                       "watchlist": [{"ticker": "NOVO-B.CO", "note": "kandidat"}]}))
     vt, eod = sources()
     dc = dtj.run(p, WEEK, REF, vt=vt, eod=eod)

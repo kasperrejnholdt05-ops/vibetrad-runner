@@ -383,13 +383,47 @@ STRATEGY_GOAL = (
     "kriser som reference – ingen løfter), 5) regler: rebalancering, hvornår en satellit sælges, og hvad der får dig til "
     "at ændre strategien, 6) en tabel 'Uenigheder mellem teams'. Ingen gearing, ingen derivater, ingen produkter, en "
     "privatkunde ikke kan købe hos Nordnet. Foretræk instrumenter med en børsticker (ETF'er og aktier), så de kan følges "
-    "dagligt; en fond uden børsticker skal have ISIN og en børsnoteret ETF som kursproxy.\n\n"
-    "Afslut rapporten med afsnittet '## Målportefølje' og præcis denne tabel – Vibetrad læser den automatisk:\n"
-    "| Instrument | Ticker | ISIN | Type | Målvægt % | Kursproxy |\n|---|---|---|---|---|---|\n"
-    "Én række pr. instrument (også kontant, hvis noget skal stå kontant). Ticker i formatet SYMBOL.BØRS "
-    "(fx NVDA.US, NOVO-B.CO, IWDA.AS, SXR8.XETRA); tom for en fond uden børsticker. Type er aktie, etf, fond eller kontant. "
-    "Målvægt % er et tal uden %-tegn, og vægtene summerer til 100. Kursproxy er kun udfyldt for fonde uden ticker."
+    "dagligt; en fond uden børsticker skal have ISIN og en børsnoteret ETF som kursproxy. Analytikerne leverer hver "
+    "deres del kort til CIO'en; kun CIO'en skriver den endelige målportefølje."
 )
+# Kun til CIO'en (system-prompt). 20/10/2026 fik alle fire agenter i porteføljegennemgangen målportefølje-kravet via
+# {goal}: tre forskellige tabeller, og CIO'ens egen blev aldrig skrevet, fordi rapporten ramte loftet for svarlængde
+# midt i "Datakvalitet" ("hentet direkte fra E"). Tabellen står derfor nu øverst.
+TARGET_TABLE_HEAD = "| Instrument | Ticker | ISIN | Type | Målvægt % | Køb fra | Kursproxy |"
+STRATEGY_CIO_EXTRA = (
+    "## Strategikørsel (Vibetrad) – din rapport\n"
+    "Din rapport har et loft for svarlængde; tekst efter loftet går tabt. Byg den derfor i denne rækkefølge:\n"
+    "1. '## Resumé' på højst 6 linjer.\n"
+    "2. Straks derefter '## Målportefølje' med præcis denne tabel – Vibetrad læser den automatisk:\n"
+    + TARGET_TABLE_HEAD + "\n|---|---|---|---|---|---|---|\n"
+    "Én række pr. instrument (også kontant, hvis noget skal stå kontant). Ticker i formatet SYMBOL.BØRS "
+    "(fx NVDA.US, NOVO-B.CO, VWCE.XETRA, IWDA.AS); tom for en fond uden børsticker. Type er aktie, etf, fond eller kontant. "
+    "Målvægt % er et tal uden %-tegn, og vægtene summerer til 100. Køb fra er DD/MM/YYYY for en position, der først skal "
+    "købes senere (fx dagen efter et regnskab), ellers tom. Kursproxy er kun udfyldt for fonde uden ticker.\n"
+    "3. Derefter resten. Hold hele rapporten under ca. 3 000 ord: tabeller frem for gentagelser, og gentag ikke teamenes "
+    "tal, som du ikke bruger.\n"
+    "Køb nu: regn i hele stk (ETF'er og aktier handles i hele stk hos Nordnet). Angiv antal, beløb i SEK og den vægt, "
+    "det faktisk giver, og læg kurtage og valutaveksling til efter kurtageklassen i porteføljeteksten.\n"
+    "Stresstest på din endelige vægt: brug for hver enkeltaktie dens egen målte fald i samme kriseperiode (hent data), "
+    "ikke indeksets fald gange aktieandelen, og sig, om resultatet bryder mandatets tålte fald.\n"
+    "Geografi: oplys den samlede vægt i Norden og i Europa inkl. kernefondens andel, og sig om det er en bevidst overvægt."
+)
+STRATEGY_ANALYST_EXTRA = (
+    "## Strategikørsel (Vibetrad)\n"
+    "I strategikørslen gælder dette i stedet for afsnittet 'Vibetrad' ovenfor. Alt står kontant. Kun CIO'en får de øvrige "
+    "teams' konklusioner og skriver den endelige målportefølje: lav ikke din egen tabel 'Målportefølje', og skriv ikke, "
+    "at teamkonklusionerne mangler. Lever din del til CIO'en på højst ca. 1 500 ord: {task}"
+)
+STRATEGY_ANALYST_TASKS = {
+    "attribution_analyst": "dit bud på målallokeringen pr. byggesten med ét Nordnet-købbart instrument hver og begrundelsen "
+                           "(hvilke byggesten der bærer væksten, og hvad der er overlap).",
+    "risk_inspector": "risikotjek af den portefølje, teamenes forslag peger på: koncentration, korrelation mellem byggestenene "
+                      "og stress, hvor hver enkeltaktie regnes med sit eget historiske kursfald.",
+    "execution_analyst": "købsplanen: hele stk, beløb i SEK, kurtage og valutaveksling efter kurtageklassen i porteføljeteksten, "
+                         "ordretype og rækkefølge, og hvad der bør vente på et regnskab.",
+}
+
+
 LANG_SUFFIX = (
     " Skriv hele rapporten på dansk. Brug datoformat DD/MM/YYYY og angiv beløb i SEK, "
     "med lokal valuta i parentes hvor relevant. Dette er research, ikke personlig rådgivning, "
@@ -1016,10 +1050,14 @@ def strategy_plan(p: dict, week: dict, *, max_swarms: int = 7) -> list[dict]:
                            f"Reference-portefølje (byg den selv af data-proxies med vægte): 60 % globalt indeks (ACWI.US), 15 % small cap "
                            f"(IWM.US), 10 % emerging markets (EEM.US), 15 % tema/enkeltaktier (QQQ.US som proxy). Brug portfolio_risk_xray og "
                            f"quantlib_call. Regn tabet i SEK i fire scenarier: 1) globalt aktiefald −30 %, 2) 2008-lignende fald −50 %, "
-                           f"3) USD/SEK −10 %, 4) amerikansk tech −40 %. Sig, om mandatets tålte fald på {DD} % holder, og hvad der "
+                           f"3) USD/SEK −10 %, 4) amerikansk tech −40 %. Regn desuden en variant, hvor 30–40 % ligger i 2–3 enkeltaktier, "
+                           f"med aktiernes egne kursfald i 2008, 2020 og 2022 (fx NVDA.US og NOVO-B.CO), for enkeltaktier falder ofte "
+                           f"mere end indekset. Sig, om mandatets tålte fald på {DD} % holder, og hvad der "
                            "sænker halerisikoen uden at opgive vækstmålet." + LANG_SUFFIX)}},
         {"preset": "portfolio_review_board", "reason": "Strategi: CIO'en samler teams til én strategi",
          "vars": {"portfolio": ptxt, "review_period": f"Uge {iso_week}: {period} (strategikørsel)", "goal": STRATEGY_GOAL + LANG_SUFFIX},
+         "system_extra": {"chief_investment_officer": STRATEGY_CIO_EXTRA,
+                          **{role: STRATEGY_ANALYST_EXTRA.format(task=t) for role, t in STRATEGY_ANALYST_TASKS.items()}},
          "cio": True},
     ]
     skip = {x.strip() for x in os.environ.get("VT_SKIP_PRESETS", "").split(",") if x.strip()}
@@ -1124,7 +1162,10 @@ def cio_digest(runs: list[dict], limit: int = 16000) -> str:
     for r in done:
         head = f"### {r.get('label', r['preset'])}\n"
         no_rep = [t.get("role") for t in r.get("tasks", []) if t.get("report") in ("empty", "plan_only")]
-        flag = f"(Agenter uden rapport i teamet: {', '.join(no_rep)})\n" if no_rep else ""
+        cut = [t.get("role") for t in r.get("tasks", []) if t.get("cut") and t.get("report") not in ("empty", "plan_only")]
+        flag = (f"(Agenter uden rapport i teamet: {', '.join(no_rep)})\n" if no_rep else "") + \
+               (f"(Afkortet midt i teksten – resten mangler: {', '.join(cut)}{' og teamets slutrapport' if r.get('final_report_cut') else ''})\n"
+                if cut or r.get("final_report_cut") else "")
         parts.append(head + flag + report_digest(r["final_report"], share - len(head) - len(flag)))
     for r in partial:
         reps = partial_reports(r)
@@ -1426,6 +1467,21 @@ def classify_report(summary: str | None) -> str:
     return "ok"
 
 
+def looks_cut(text: str | None) -> bool:
+    """Slutter rapporten midt i en sætning? Agenterne skriver report.md i ét værktøjskald, og rammer svaret loftet for
+    svarlængde, gemmes kun begyndelsen (CIO 20/10/2026: "… hentet direkte fra E"; Risk Budgeter: "| … | 29").
+    Rapporter slutter normalt med "Faktatjek: …" eller et tegn som . ! ? ) | :."""
+    t = (text or "").strip()
+    if len(t) < 2000:
+        return False
+    last = next((x.strip() for x in reversed(t.splitlines()) if x.strip()), "")
+    if last.startswith("|") and not last.endswith("|"):
+        return True
+    if re.search(r"faktatjek\s*:", t[-400:], re.I):
+        return False
+    return not re.search(r"[.!?)\]»\"'*`|:%]$", last)
+
+
 def summarize_run(run: Any, preset: str, reason: str, started: dt.datetime, duration_s: float,
                   *, price_in: float, price_out: float, report_cap: int = 60_000, task_cap: int = 16_000,
                   stopped: str | None = None) -> dict:
@@ -1438,6 +1494,7 @@ def summarize_run(run: Any, preset: str, reason: str, started: dt.datetime, dura
             "id": t.id, "agent_id": t.agent_id, "role": roles.get(t.agent_id, t.agent_id),
             "status": _status(t.status), "summary": _cap(t.summary, task_cap), "error": _cap(t.error, 2000),
             "report": classify_report(t.summary) if _status(t.status) == "completed" else None,
+            "cut": looks_cut(t.summary),
             "iterations": int(getattr(t, "worker_iterations", 0) or 0),
             "started_at": getattr(t, "started_at", None), "completed_at": getattr(t, "completed_at", None),
         })
@@ -1451,8 +1508,10 @@ def summarize_run(run: Any, preset: str, reason: str, started: dt.datetime, dura
         "tokens_in": tin, "tokens_out": tout,
         "est_cost_usd": round(tin / 1e6 * price_in + tout / 1e6 * price_out, 2),
         "final_report": _cap(getattr(run, "final_report", None), report_cap),
+        "final_report_cut": looks_cut(getattr(run, "final_report", None)),
         "tasks": tasks,
         "agents_without_report": [t["role"] for t in tasks if t["report"] in ("empty", "plan_only")],
+        "agents_cut": [t["role"] for t in tasks if t["cut"] and t["report"] not in ("empty", "plan_only")],
     }
 
 
@@ -2168,16 +2227,19 @@ def main(argv: list[str] | None = None) -> int:
                          "tasks": [], "tokens_in": 0, "tokens_out": 0, "est_cost_usd": 0})
             con.say(f"· {label}: sprunget over (budget)")
             continue
-        system_extra: dict[str, str] = {}
+        system_extra: dict[str, str] = dict(step.get("system_extra") or {})
         if step.get("cio"):
             step["vars"]["goal"] = step["vars"]["goal"] + dtj.cio_instruction(datacheck) + journal_instruction(portfolio)
             digest = cio_digest(runs)
             if args.dry_run:
                 step["vars"]["goal"] += digest
             elif digest:
-                system_extra["chief_investment_officer"] = digest
-                step["vars"]["goal"] += ("\n\nDe øvrige teams' konklusioner står i afsnittet 'Konklusioner fra ugens øvrige "
-                                         "Vibe-Trading-teams' i din instruks.")
+                # Kun CIO'en får digesten – henvisningen må derfor heller ikke stå i {goal}, som hele teamet ser
+                # (20/10/2026 skrev to analytikere, at afsnittet "indeholdt ingen tekst").
+                system_extra["chief_investment_officer"] = "\n\n".join(
+                    x for x in (system_extra.get("chief_investment_officer"), digest.strip(),
+                                "De øvrige teams' konklusioner står i afsnittet 'Konklusioner fra ugens øvrige "
+                                "Vibe-Trading-teams' ovenfor.") if x)
         if not args.dry_run:
             with contextlib.suppress(Exception):  # kun kosmetik for agenterne: må aldrig stoppe kørslen
                 prepare_step_preset(Path.home() / ".vibe-trading" / "swarm" / "presets", step["preset"], step["vars"],
@@ -2207,6 +2269,8 @@ def main(argv: list[str] | None = None) -> int:
         used_usd += float(r.get("est_cost_usd") or 0)
         nr = r.get("agents_without_report") or []
         miss = f" · {len(nr)} af {len(r.get('tasks') or [])} agenter uden rapport: {', '.join(nr)}" if nr else ""
+        cut = (r.get("agents_cut") or []) + (["slutrapporten"] if r.get("final_report_cut") else [])
+        miss += f" · afkortet midt i teksten: {', '.join(cut)}" if cut else ""
         if r["status"] not in ("completed", "skipped") and r.get("tasks"):
             # Hvilke agenter faldt, og hvilke nåede at levere (kun roller og fejltype, aldrig fejlteksten)
             bad = [f"{t.get('role')} ({t.get('status')}" + (f": {_error_kind(t.get('error'))}" if t.get("error") else "") + ")"
