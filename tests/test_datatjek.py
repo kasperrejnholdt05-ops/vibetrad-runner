@@ -688,3 +688,14 @@ def test_news_fetch_failure_is_visible_in_the_row():
     s = _spcx(dtj.run(p, WEEK, REF, vt=vt, eod=eod))
     assert s["news_error"] == "RuntimeError" and s["news_scanned"] is None
     assert any(n.startswith("nyheder kunne ikke hentes") for n in s["notes"])
+
+
+def test_cash_only_portfolio_runs_and_brief_has_no_holdings():
+    # Alt solgt (Kasper 15/10/2026): datatjekket må ikke vælte på en tom beholdning, og overvågningslisten tjekkes stadig.
+    p = rw.load_portfolio(json.dumps({"holdings": [], "cash_sek": 40000.5, "monthly_deposit_sek": 20000,
+                                      "watchlist": [{"ticker": "NOVO-B.CO", "note": "kandidat"}]}))
+    vt, eod = sources()
+    dc = dtj.run(p, WEEK, REF, vt=vt, eod=eod)
+    assert dc["status"] == "PASS" and dc["issues"] == [] and dc["portfolio"]["total_sek"] == 40000.5
+    brief = dtj.agent_brief(dc)
+    assert isinstance(brief, str) and "40000" not in brief

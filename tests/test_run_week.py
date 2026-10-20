@@ -165,6 +165,7 @@ def test_strategy_plan_seven_teams_and_mandate_in_goals(monkeypatch):
         v = " ".join(str(x) for x in st["vars"].values())
         assert "40 093 SEK kontant nu" in v and "20 000 SEK" in v and "horisont 5 år" in v and "op til 50 %" in v, st["preset"]
     assert "5–8 vækstaktier" in plan[4]["vars"]["goal"] and "hver højst 20 %" in plan[4]["vars"]["goal"]
+    assert all("gælder mandatet" in " ".join(str(x) for x in st["vars"].values()) for st in plan[:5])
     assert "ACWI.US" in plan[5]["vars"]["goal"] and "tålte fald på 50 %" in plan[5]["vars"]["goal"]
     # kun fonde: idéjagten bliver en temasøgning; strategi kan vælges eksplicit med beholdning
     q = rw.load_portfolio(json.dumps(dict(CASH_ONLY, mandate=dict(CASH_ONLY["mandate"], universe="kun fonde"))))

@@ -980,7 +980,8 @@ def strategy_plan(p: dict, week: dict, *, max_swarms: int = 7) -> list[dict]:
                "notering, ISIN) og enkeltaktier på nordiske, europæiske og amerikanske børser. Amerikanske ETF'er som ACWI.US "
                "er kun dataproxy. Ingen gearing, derivater eller certifikater. ")
     base = (f"Investoren har solgt alt og har {money}. Mandat: horisont {H} år, maksimér væksten, tåler et midlertidigt fald "
-            f"på op til {DD} % uden at sælge, univers: {uni}, loft {CAP} % pr. enkeltaktie. {nordnet}")
+            f"på op til {DD} % uden at sælge, univers: {uni}, loft {CAP} % pr. enkeltaktie. Ved modstrid mellem investeringsrammen, "
+            f"et ældre mål og dette mandat gælder mandatet. {nordnet}")
     plan: list[dict] = [
         {"preset": "macro_strategy_forum", "reason": "Strategi: makro og aktivklasser for horisonten",
          "vars": {"market": "globalt aktiemarked (USA, Europa, Norden, emerging markets) for en svensk investor i SEK. "
