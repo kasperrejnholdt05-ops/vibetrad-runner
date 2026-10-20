@@ -191,10 +191,12 @@ def test_dry_run_strategy_from_cash(tmp_path):
     p = run_main(tmp_path, "--event", "workflow_dispatch", "--now", "2026-10-21T12:00", VT_PORTFOLIO=json.dumps(CASH_ONLY), VT_PLAN="strategi")
     assert p.returncode == 0, p.stderr
     log = p.stdout + p.stderr
-    assert "Plan: Makrostrategi (5 år), Sektorer og temaer, ETF-allokering, Fondsvalg (ISK-kerne), Idéjagt uden for tech, Risikoudvalg, Porteføljegennemgang (CIO)" in log
+    assert "Plan: Makrostrategi (5 år), Sektorer og temaer, ETF-allokering, Fondsvalg (ISK-kerne), Idéjagt: vækstaktier, Risikoudvalg, Porteføljegennemgang (CIO)" in log
+    assert "Idéjagt uden for tech" not in log
     assert "Resultat: ok · 7/7 swarms" in log and "40 093" not in log and "40092" not in log
     data = rw.decrypt(json.loads((tmp_path / "results" / "latest.enc.json").read_text()), PASS)
     assert data["totals"]["plan_kind"] == "strategi" and data["portfolio"]["holdings"] == [] and len(data["runs"]) == 7
+    assert data["runs"][4]["label"] == "Idéjagt: vækstaktier" and data["runs"][0]["label"] == "Makrostrategi (5 år)"
 
 
 # --- plan ------------------------------------------------------------------

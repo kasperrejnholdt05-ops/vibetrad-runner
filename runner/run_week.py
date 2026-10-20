@@ -998,7 +998,8 @@ def strategy_plan(p: dict, week: dict, *, max_swarms: int = 7) -> list[dict]:
         {"preset": "fund_selection_panel", "reason": "Strategi: konkrete fonde og ETF'er på Nordnet",
          "vars": {"fund_type": "aktiefonde og UCITS-ETF'er på Nordnet ISK: globale indeks, USA, Europa, Norden, small cap, emerging markets, tema/sektor",
                   "goal": base + "Vælg 3–6 konkrete fonde/ETF'er (navn og ISIN) med omkostninger, tracking og risiko, der passer til kernen. Skriv på dansk, beløb i SEK."}},
-        {"preset": "equity_research_team", "reason": "Strategi: enkeltaktier som satellitter" if m["universe"] != "kun fonde" else "Strategi: idéjagt (kun fonde – aktier som reference)",
+        {"preset": "equity_research_team", "label": "Idéjagt: vækstaktier" if m["universe"] != "kun fonde" else "Idéjagt: temaer til fondene",
+         "reason": "Strategi: enkeltaktier som satellitter" if m["universe"] != "kun fonde" else "Strategi: idéjagt (kun fonde – aktier som reference)",
          "vars": {"market": "USA, Europa og Norden (Nasdaq, NYSE, Xetra, Stockholm, København, Oslo, Helsinki)",
                   "goal": base + (f"Find 5–8 vækstaktier med {H} års medvind, der kan udgøre satellitterne (hver højst {CAP} %), med tese, "
                                   "kill-kriterie og hvad der skal være sandt om 5 år. " if m["universe"] != "kun fonde" else
@@ -2116,7 +2117,7 @@ def main(argv: list[str] | None = None) -> int:
     plan = build_plan(portfolio, ref, week, max_swarms=max_swarms, plan_kind=plan_kind,
                       force_risk=args.force_risk, reports=reports, history=history,
                       by_date=(args.event == "schedule"))
-    con.say("Plan: " + ", ".join(PRESET_LABELS.get(s["preset"], s["preset"]) for s in plan))
+    con.say("Plan: " + ", ".join(s.get("label") or PRESET_LABELS.get(s["preset"], s["preset"]) for s in plan))
 
     vt_version = "?"
     shellfree: list[str] = []
@@ -2151,7 +2152,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run:
         silence_rest(log_path)  # Vibe-Tradings tråde (også efter en tidsgrænse) må aldrig nå den offentlige log
     for step in plan if runtime else []:
-        label = PRESET_LABELS.get(step["preset"], step["preset"])
+        label = step.get("label") or PRESET_LABELS.get(step["preset"], step["preset"])
         left = budget - used_usd
         reserve = 0.0 if step.get("cio") else cio_reserve
         if left < reserve + min_swarm:
@@ -2187,6 +2188,7 @@ def main(argv: list[str] | None = None) -> int:
                                         price_in=price_in, price_out=price_out, stopped=stopped)
                 if step.get("context"):
                     summary["context"] = step["context"]
+                summary["label"] = label  # et trin kan have sit eget navn (strategikørslen)
                 runs.append(summary)
             except Exception as exc:
                 errors.append({"stage": step["preset"], "type": type(exc).__name__, "message": str(exc)[:2000],
