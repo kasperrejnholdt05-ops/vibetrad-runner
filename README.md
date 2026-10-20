@@ -265,6 +265,10 @@ Upload resultatet i Vibe-Tradings Agent-chat. Shadow-backtesten understøtter am
 
 Opdatér `VT_PORTFOLIO` (Kopiér VT_PORTFOLIO i Vibetrad → `gh secret set VT_PORTFOLIO --repo kasperrejnholdt05-ops/vibetrad-runner`). Ellers analyserer lørdagens kørsel den gamle beholdning.
 
+## Beslutninger til Kasper (siden "I dag")
+
+Hver CIO-rapport starter med `## Resumé` (højst 5 linjer på almindeligt dansk) og `## Beslutninger til Kasper` – en tabel med Handling (køb, øg, reducér, sælg, hold, afvent, revurdér), Papir, Beløb SEK, Hvorfor (én sætning), Hvornår og "Jeg tager fejl, hvis" (`CIO_DECISION_EXTRA`; i strategikørslen efter målporteføljen). Vibetrad viser hver række som et kort med knapper (Handelstjek med beløb og tese udfyldt, "Hold – notér det", Udsæt 7 dage, Skjul) på siden **I dag**, sammen med resuméet, agenternes beslutning og trendstatus pr. papir, dagens advarsler og investorens regler. Den fulde rapport ligger under Ugerapport. Ældre rapporter uden tabellen kan få en beslutningsliste udtrukket af Claude på siden.
+
 ## Visser-laget: trendvagt og fem-agent-panel
 
 Inspireret af Jordi Visser (tidl. præsident og CIO i Weiss Multi-Strategy Advisers): fem agenter med hver sin opgave og et enkelt trendfilter – kursen over et **stigende** 200-dages gennemsnit, og "rate of change" nulstillet tæt på nul efter at have været høj (konsolidering med trenden intakt, ca. tre måneders horisont). Her bruges det som et ekstra lag i analysen af en langsigtet ISK, ikke til daghandel.

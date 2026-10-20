@@ -394,6 +394,22 @@ STRATEGY_GOAL = (
 # {goal}: tre forskellige tabeller, og CIO'ens egen blev aldrig skrevet, fordi rapporten ramte loftet for svarlængde
 # midt i "Datakvalitet" ("hentet direkte fra E"). Tabellen står derfor nu øverst.
 TARGET_TABLE_HEAD = "| Instrument | Ticker | ISIN | Type | Målvægt % | Køb fra | Kursproxy |"
+# Kun til CIO'en: kort resumé og en beslutningstabel øverst, som Vibetrad viser på siden "I dag" med knapper
+# (Handelstjek, Hold, Udsæt). Kasper skal kunne handle på konklusionen uden at læse hele rapporten (20/10/2026).
+DECISION_TABLE_HEAD = "| Handling | Papir | Beløb SEK | Hvorfor | Hvornår | Jeg tager fejl, hvis |"
+DECISION_RULES = (
+    "Handling er én af: køb, øg, reducér, sælg, hold, afvent, revurdér. Papir er tickeren (SYMBOL.BØRS). Beløb SEK er et "
+    "tal uden mellemrum eller tomt. Hvorfor er én kort sætning på almindeligt dansk med det tal, der afgør det. Hvornår er "
+    "DD/MM/YYYY eller 'nu'. Jeg tager fejl, hvis er en målbar betingelse. Højst 6 rækker og kun det, investoren skal tage "
+    "stilling til før næste kørsel; er der intet, så én række: | hold | – | | Ingen handling nødvendig | | |"
+)
+CIO_DECISION_EXTRA = (
+    "## Rapportens start (Vibetrad)\n"
+    "Din rapport har et loft for svarlængde; skriv det vigtigste først. Start med '## Resumé' (højst 5 linjer, almindeligt "
+    "dansk, ingen fagudtryk uden forklaring) og straks derefter '## Beslutninger til Kasper' med præcis denne tabel – "
+    "Vibetrad læser den automatisk og viser hver række som en beslutning med knapper:\n"
+    + DECISION_TABLE_HEAD + "\n|---|---|---|---|---|---|\n" + DECISION_RULES + "\nDerefter resten af rapporten."
+)
 STRATEGY_CIO_EXTRA = (
     "## Strategikørsel (Vibetrad) – din rapport\n"
     "Din rapport har et loft for svarlængde; tekst efter loftet går tabt. Byg den derfor i denne rækkefølge:\n"
@@ -404,7 +420,9 @@ STRATEGY_CIO_EXTRA = (
     "(fx NVDA.US, NOVO-B.CO, VWCE.XETRA, IWDA.AS); tom for en fond uden børsticker. Type er aktie, etf, fond eller kontant. "
     "Målvægt % er et tal uden %-tegn, og vægtene summerer til 100. Køb fra er DD/MM/YYYY for en position, der først skal "
     "købes senere (fx dagen efter et regnskab), ellers tom. Kursproxy er kun udfyldt for fonde uden ticker.\n"
-    "3. Derefter resten. Hold hele rapporten under ca. 3 000 ord: tabeller frem for gentagelser, og gentag ikke teamenes "
+    "3. Straks derefter '## Beslutninger til Kasper' med præcis denne tabel (Vibetrad viser hver række som en beslutning):\n"
+    + DECISION_TABLE_HEAD + "\n|---|---|---|---|---|---|\n" + DECISION_RULES + "\n"
+    "4. Derefter resten. Hold hele rapporten under ca. 3 000 ord: tabeller frem for gentagelser, og gentag ikke teamenes "
     "tal, som du ikke bruger.\n"
     "Køb nu: regn i hele stk (ETF'er og aktier handles i hele stk hos Nordnet). Angiv antal, beløb i SEK og den vægt, "
     "det faktisk giver, og læg kurtage og valutaveksling til efter kurtageklassen i porteføljeteksten.\n"
@@ -2312,6 +2330,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         system_extra: dict[str, str] = dict(step.get("system_extra") or {})
         if step.get("cio"):
+            system_extra.setdefault("chief_investment_officer", CIO_DECISION_EXTRA)
             step["vars"]["goal"] = step["vars"]["goal"] + dtj.cio_instruction(datacheck) + journal_instruction(portfolio)
             digest = cio_digest(runs)
             if args.dry_run:
@@ -2320,7 +2339,7 @@ def main(argv: list[str] | None = None) -> int:
                 # Kun CIO'en får digesten – henvisningen må derfor heller ikke stå i {goal}, som hele teamet ser
                 # (20/10/2026 skrev to analytikere, at afsnittet "indeholdt ingen tekst").
                 system_extra["chief_investment_officer"] = "\n\n".join(
-                    x for x in (system_extra.get("chief_investment_officer"), digest.strip(),
+                    x for x in (system_extra.get("chief_investment_officer") or CIO_DECISION_EXTRA, digest.strip(),
                                 "De øvrige teams' konklusioner står i afsnittet 'Konklusioner fra ugens øvrige "
                                 "Vibe-Trading-teams' ovenfor.") if x)
         if not args.dry_run:

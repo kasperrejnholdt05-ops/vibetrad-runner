@@ -166,7 +166,8 @@ def test_strategy_plan_seven_teams_and_mandate_in_goals(monkeypatch):
     extra = plan[-1]["system_extra"]
     cio = extra["chief_investment_officer"]
     assert "## Målportefølje" in cio and rw.TARGET_TABLE_HEAD in cio and "Køb fra" in rw.TARGET_TABLE_HEAD
-    assert cio.index("## Resumé") < cio.index("## Målportefølje") < cio.index("3. Derefter resten")
+    assert cio.index("## Resumé") < cio.index("## Målportefølje") < cio.index("## Beslutninger til Kasper") < cio.index("4. Derefter resten")
+    assert rw.DECISION_TABLE_HEAD in cio
     assert "hele stk" in cio and "egen målte fald" in cio and "Norden" in cio
     assert set(extra) == {"chief_investment_officer", "attribution_analyst", "risk_inspector", "execution_analyst"}
     for role in ("attribution_analyst", "risk_inspector", "execution_analyst"):
@@ -1413,3 +1414,13 @@ def test_summary_and_digest_flag_cut_reports():
     assert s["agents_cut"] == ["Risk Budgeter"] and s["final_report_cut"] and s["tasks"][1]["cut"] is False
     d = rw.cio_digest([s])
     assert "Afkortet midt i teksten – resten mangler: Risk Budgeter og teamets slutrapport" in d
+
+
+def test_weekly_cio_gets_the_decision_table_first():
+    extra = rw.CIO_DECISION_EXTRA
+    assert extra.index("## Resumé") < extra.index("'## Beslutninger til Kasper'") < extra.index("Derefter resten")
+    assert rw.DECISION_TABLE_HEAD in extra and "køb, øg, reducér, sælg, hold, afvent, revurdér" in extra
+    p = rw.load_portfolio(json.dumps(PORTFOLIO))
+    ref = sto("2026-10-17T08:00")
+    plan = rw.build_plan(p, ref, rw.week_window(ref), reports=[])
+    assert plan[-1]["cio"] and "system_extra" not in plan[-1]  # ugeplanen: CIO_DECISION_EXTRA lægges på i kørslen
