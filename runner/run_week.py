@@ -535,6 +535,24 @@ def _clean_portfolio(p: dict) -> dict:
     src = p.get("next_reports_source")
     p["next_reports_source"] = ({dtj.norm_ticker(k): str(v).strip().lower() for k, v in src.items()
                                  if str(v).strip().lower() in NEXT_REPORT_SOURCES} if isinstance(src, dict) else {})
+    # Journal (Vibetrad → Journal/Handelstjek): teser og kill-kriterier, så CIO'en kan følge op efter handlen.
+    jr = p.get("journal")
+    clean_jr = []
+    for j in (jr if isinstance(jr, list) else []):
+        if len(clean_jr) >= 40:
+            break
+        if not isinstance(j, dict) or not str(j.get("ticker") or "").strip():
+            continue
+        txt = lambda k, n: re.sub(r"\s+", " ", str(j.get(k) or "")).strip()[:n] or None  # noqa: E731
+        date = str(j.get("date") or "")[:10]
+        clean_jr.append({"ticker": dtj.norm_ticker(j.get("ticker")), "date": date if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) else None,
+                         "action": txt("action", 20), "thesis": txt("thesis", 300), "kill": txt("kill", 300),
+                         "review": (str(j.get("review") or "")[:10] or None), "status": txt("status", 20),
+                         "amount_sek": _num(j.get("amount_sek"), "journal.amount_sek", default=None, allow_none=True)})
+    p["journal"] = clean_jr
+    # Regler fra Vibetrad → Plan (exit, loft, rebalancering): tekst, som agenterne skal respektere.
+    rules = p.get("rules")
+    p["rules"] = re.sub(r"\s+", " ", str(rules)).strip()[:1500] if isinstance(rules, str) and rules.strip() else None
     return p
 
 
@@ -621,7 +639,35 @@ def portfolio_text(p: dict) -> str:
                  "men skriv 'kurtage og valutaveksling efter din Nordnet-klasse'.")
     if p.get("framework"):
         lines.append(f"Investeringsramme: {p['framework']}")
+    if p.get("rules"):
+        lines.append(f"Investorens egne regler (Vibetrad → Plan), som alle forslag skal respektere: {p['rules']}")
+    if p.get("journal"):
+        lines.append("Investorens journal (tese og kill-kriterie pr. beslutning; 'planlagt' = endnu ikke handlet):")
+        for j in p["journal"]:
+            bits = [f"{fr._dmy(j['date']) if j.get('date') else 'dato ukendt'} {j.get('action') or ''} {j['ticker']}".strip()]
+            if j.get("status"):
+                bits.append(j["status"])
+            if j.get("amount_sek"):
+                bits.append(f"{j['amount_sek']:,.0f} SEK".replace(",", " "))
+            if j.get("thesis"):
+                bits.append(f"tese: {j['thesis']}")
+            if j.get("kill"):
+                bits.append(f"tager fejl hvis: {j['kill']}")
+            if j.get("review"):
+                bits.append(f"opfølgning {fr._dmy(j['review'])}")
+            lines.append("- " + " · ".join(bits))
     return "\n".join(lines)
+
+
+def journal_instruction(p: dict) -> str:
+    """CIO'en følger op efter handlen: holder tesen, er kill-kriteriet ramt, hvad er næste skridt."""
+    if not p.get("journal"):
+        return ""
+    return ("\n\nOpfølgning efter handel: Investorens journal (se porteføljeteksten) har en tese og et kill-kriterie pr. "
+            "beslutning. Medtag et afsnit 'Opfølgning på journalen' med én linje pr. post: holder tesen ud fra ugens data "
+            "(ja/delvist/nej), er kill-kriteriet ramt, nær eller langt fra, og hvad der bør ske (hold, revurdér på "
+            "opfølgningsdatoen, reducér) med begrundelse i tal. Skeln mellem god beslutning og godt udfald. Poster med "
+            "status 'planlagt' vurderes som: bør handlen stadig gennemføres?")
 
 
 # ---------------------------------------------------------------------------
@@ -1974,7 +2020,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
         system_extra: dict[str, str] = {}
         if step.get("cio"):
-            step["vars"]["goal"] = step["vars"]["goal"] + dtj.cio_instruction(datacheck)
+            step["vars"]["goal"] = step["vars"]["goal"] + dtj.cio_instruction(datacheck) + journal_instruction(portfolio)
             digest = cio_digest(runs)
             if args.dry_run:
                 step["vars"]["goal"] += digest

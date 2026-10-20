@@ -112,6 +112,25 @@ def test_portfolio_text_and_weights():
     assert w["ZZTOP.US"]["over_max"] is True and w["ZZTOP.US"]["weight_cost_pct"] == pytest.approx(64.3, abs=0.1)
 
 
+def test_journal_and_rules_reach_the_cio_but_junk_does_not():
+    raw = dict(PORTFOLIO, rules="  Maks. 10 % pr. aktie.\n Kill → sælg inden 5 dage. ", journal=[
+        {"ticker": "zztop.us", "date": "2026-10-06", "action": "Køb", "thesis": "Rumfart  vokser 30 %/år", "kill": "Starship fejler to gange",
+         "review": "2027-01-15", "status": "udført", "amount_sek": 21480},
+        {"ticker": "", "thesis": "ingen ticker"}, "ikke en post",
+        {"ticker": "QQQ.US", "date": "snart", "action": "Hold", "thesis": "x" * 500}] + [{"ticker": f"T{i}.US"} for i in range(60)])
+    p = rw.load_portfolio(json.dumps(raw))
+    assert p["rules"] == "Maks. 10 % pr. aktie. Kill → sælg inden 5 dage." and len(p["journal"]) == 40
+    j = p["journal"][0]
+    assert j == {"ticker": "ZZTOP.US", "date": "2026-10-06", "action": "Køb", "thesis": "Rumfart vokser 30 %/år",
+                 "kill": "Starship fejler to gange", "review": "2027-01-15", "status": "udført", "amount_sek": 21480.0}
+    assert p["journal"][1]["date"] is None and len(p["journal"][1]["thesis"]) == 300
+    txt = rw.portfolio_text(p)
+    assert "Investorens egne regler (Vibetrad → Plan), som alle forslag skal respektere: Maks. 10 % pr. aktie." in txt
+    assert "- 06/10/2026 Køb ZZTOP.US · udført · 21 480 SEK · tese: Rumfart vokser 30 %/år · tager fejl hvis: Starship fejler to gange · opfølgning 15/01/2027" in txt
+    assert "Opfølgning på journalen" in rw.journal_instruction(p) and rw.journal_instruction(rw.load_portfolio(json.dumps(PORTFOLIO))) == ""
+    assert rw.load_portfolio(json.dumps(dict(PORTFOLIO, rules=42, journal="nej")))["journal"] == []
+
+
 # --- plan ------------------------------------------------------------------
 def presets(plan):
     return [s["preset"] for s in plan]

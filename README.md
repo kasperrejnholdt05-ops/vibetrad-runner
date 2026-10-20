@@ -256,6 +256,10 @@ Upload resultatet i Vibe-Tradings Agent-chat. Shadow-backtesten understøtter am
 
 Opdatér `VT_PORTFOLIO` (Kopiér VT_PORTFOLIO i Vibetrad → `gh secret set VT_PORTFOLIO --repo kasperrejnholdt05-ops/vibetrad-runner`). Ellers analyserer lørdagens kørsel den gamle beholdning.
 
+## Journal og regler fra Vibetrad (opfølgning efter handel)
+
+Vibetrad-siden sender to ting mere med i `VT_PORTFOLIO` (Ugerapport → Opsætning → Kopiér VT_PORTFOLIO): `rules` (investorens egne regler fra Plan: loft pr. aktie, trim-regel, kill-frist, revurderingsgrænse, rebalanceringsmåneder og fri tekst) og `journal` (op til 40 beslutninger fra Journal/Handelstjek med dato, handling, tese, kill-kriterie, opfølgningsdato, status planlagt/udført og beløb). `load_portfolio` renser begge (tekst afkortes, datoer valideres, ukendte felter ignoreres), `portfolio_text` skriver dem ind i alle teams' porteføljetekst, og CIO'en får instruktionen "Opfølgning på journalen": én linje pr. post om tesen holder, om kill-kriteriet er ramt, og hvad der bør ske – med forskel på god beslutning og godt udfald. Planlagte handler vurderes som "bør handlen stadig gennemføres?". Ingen af delene når GitHub-loggen.
+
 ## Kanariefuglen (daglig gratis tørkørsel)
 
 Lørdagens rigtige kørsel koster penge og må ikke være den første, der opdager, at en nøgle er udløbet. Derfor kører workflowet hver nat kl. 03:30 UTC (05:30 sommertid, 04:30 vintertid) som **kanariefugl**: `VT_CANARY=true` + `VT_DRY_RUN=true` (`runner/kanarie.py`). Den kører den samme kæde som en rigtig kørsel, men uden agenter og uden API-kredit, og tjekker:
@@ -280,7 +284,7 @@ Den skriver kun `results/canary.json` (offentligt: status, de enkelte tjek med n
 
 ```bash
 pip install "cryptography>=42" pyyaml pytest pandas
-python -m pytest -q                      # 240 tests (integrationstestene for EODHD og Vibe-Trading-rettelserne kører kun, hvor vibe-trading-ai er installeret)
+python -m pytest -q                      # 241 tests (integrationstestene for EODHD og Vibe-Trading-rettelserne kører kun, hvor vibe-trading-ai er installeret)
 node tests/decrypt_webcrypto.mjs results/latest.enc.json 'adgangsfrase'   # dekrypterer en kuvert med WebCrypto præcis som Vibetrad-siden (testene bruger den, når node findes)
 VT_PORTFOLIO="$(cat runner/portfolio.example.json)" VT_RESULTS_PASSPHRASE=0123456789abcdef \
   python runner/run_week.py --dry-run --event workflow_dispatch --results /tmp/vt-results
