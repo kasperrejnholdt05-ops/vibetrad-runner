@@ -869,6 +869,13 @@ def yf_next_report(ticker: str) -> dt.date | None:
     return None
 
 
+def target_holdings(p: dict) -> list[dict]:
+    """Målporteføljens papirer (uden kontant) som planlagte positioner – bruges, når der endnu intet er købt."""
+    kind = {"aktie": "stock", "etf": "etf", "fond": "fund"}
+    return [{"ticker": g["ticker"], "name": g.get("name") or g["ticker"], "kind": kind.get(g.get("type"), "stock"),
+             "weight": g.get("weight")} for g in p.get("target") or [] if g.get("ticker") and g.get("type") != "kontant"]
+
+
 def upcoming_reports(p: dict, ref: dt.datetime, horizon_days: int = 14,
                      lookup: Callable[[str], dt.date | None] | None = yf_next_report,
                      verified: dict[str, str] | None = None,
@@ -883,7 +890,7 @@ def upcoming_reports(p: dict, ref: dt.datetime, horizon_days: int = 14,
     end = today + dt.timedelta(days=horizon_days)
     found = []
     seen: set[str] = set()
-    for h in p["holdings"]:
+    for h in list(p["holdings"]) + target_holdings(p):  # også målporteføljens aktier, før de er købt
         if h["kind"] in ("cash", "fund", "etf") or h["ticker"] in seen:  # samme papir to gange → ét regnskab
             continue
         seen.add(h["ticker"])
@@ -959,6 +966,8 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
                reports: list[dict] | None = None, force_risk: bool = False,
                history: list[dict] | None = None, by_date: bool | None = None) -> list[dict]:
     """Ugens plan. Rækkefølge: risiko → dybdeanalyser → CIO (som får de andres konklusioner)."""
+    if plan_kind == "alt":
+        return alt_plan(p, ref, week, reports=reports, max_swarms=max_swarms)
     if plan_kind == "strategi" or not p["holdings"]:  # alt kontant: byg porteføljen fra bunden
         return strategy_plan(p, week, max_swarms=max_swarms)
     goal = (p.get("goal") or (TRANSITION_GOAL if p.get("weight_policy") == "target" else DEFAULT_GOAL)).strip()
@@ -1097,6 +1106,96 @@ def build_plan(p: dict, ref: dt.datetime, week: dict, *, max_swarms: int = 6, pl
     skip = {x.strip() for x in os.environ.get("VT_SKIP_PRESETS", "").split(",") if x.strip()}
     if force_risk:
         skip.discard("risk_committee")
+    plan = [s for s in plan if s["preset"] not in skip or s.get("cio")]
+    if len(plan) > max(1, max_swarms):  # behold altid CIO'en
+        plan = plan[:max(1, max_swarms) - 1] + [plan[-1]]
+    return plan
+
+
+ALT_GOAL = (
+    "Ugerapporten: saml ALLE ugens teams (risiko og stresstest, regnskaber, aktieanalyse af hvert navn, strategi og makro) "
+    "til én vurdering af den valgte portefølje. Hvad holder, hvad skal ændres, og hvad skal investoren gøre før næste "
+    "rapport? Brug facit for kurser, trend (200-dages-reglen, 5 år, spredning), Buffett-indikatoren, kreditmarkedet og "
+    "kæde-tjekket (kanariefuglen). Investoren er ikke aktieekspert: skriv kort og uden fagord."
+)
+
+
+def alt_plan(p: dict, ref: dt.datetime, week: dict, *, reports: list[dict] | None = None, max_swarms: int = 7) -> list[dict]:
+    """Den ene ugerapport: alle teams på den valgte portefølje – beholdningen, eller målporteføljen, når alt står kontant.
+
+    Rækkefølge: risiko → regnskaber (højst 2) → aktieanalyse (Visser-panelet: fundamentals, nyheder og katalysatorer,
+    trend, risiko og porteføljechef pr. navn) → strategi og makro → CIO, der får alle de andres konklusioner.
+    Uden beholdning OG uden målportefølje bygges porteføljen fra kontant (strategikørslen)."""
+    held = [h for h in p["holdings"] if h["kind"] != "cash"]
+    tgt = target_holdings(p)
+    if not held and not tgt:
+        return strategy_plan(p, week, max_swarms=max_swarms)
+    m = p.get("mandate") or {"horizon_years": 5, "max_drawdown_pct": 30, "universe": "kerne+satellit", "single_stock_cap_pct": 10}
+    H, DD, CAP = m["horizon_years"], m["max_drawdown_pct"], m["single_stock_cap_pct"]
+    ptxt = portfolio_text(p)
+    period = f"{dmy(dt.date.fromisoformat(week['from']))}–{dmy(dt.date.fromisoformat(week['to']))}"
+    iso_week = dt.date.fromisoformat(week["from"]).isocalendar().week
+    if held:
+        basis = "den nuværende portefølje (beholdningen" + (" og målporteføljen, den bygges hen imod)" if tgt else ")")
+        wtxt = ", ".join(f"{w['ticker']} {w['weight_cost_pct']:g} %" for w in cost_weights(p) if w["weight_cost_pct"] is not None)
+        stocks = [h for h in held if h["kind"] not in ("fund", "etf")]
+        biggest = max(stocks or held, key=lambda h: h.get("cost_sek") or 0)
+    else:
+        basis = ("målporteføljen (endnu ikke købt: alt står kontant og købes gradvist med de månedlige indskud – vurdér "
+                 "den, som om den var købt, og sig hvad der bør ændres, før der købes)")
+        wtxt = ", ".join(f"{g['ticker']} {g['weight']:g} %" for g in tgt if g.get("weight") is not None)
+        stocks = [g for g in tgt if g["kind"] == "stock"]
+        biggest = max(stocks or tgt, key=lambda g: g.get("weight") or 0)
+    rules = (f"Mandat: horisont {H} år, tåler et midlertidigt fald på op til {DD} % uden at sælge, loft {CAP} % pr. enkeltaktie, "
+             "svensk ISK hos Nordnet i SEK, ingen gearing eller derivater. ")
+    plan: list[dict] = [{
+        "preset": "risk_committee", "label": "Risiko og stresstest", "reason": "Ugerapport: risiko og stresstest",
+        "vars": {"goal": (
+            f"Vurdér drawdown, halerisiko og markedsregime for {basis} (periode {period}):\n{ptxt}\nVægte: {wtxt}. {rules}"
+            "Brug portfolio_risk_xray på disse symboler og vægte, og quantlib_call til VaR/CVaR og regime. Regn tabet i SEK i fire "
+            f"scenarier: 1) globalt aktiefald −30 %, 2) 2008-lignende fald −50 %, 3) USD/SEK −10 %, 4) {biggest['name']} "
+            f"({biggest['ticker']}) −50 % med sin egen historik. Sig, om det tålte fald på {DD} % holder. Brug kreditmarkedet "
+            "(high-yield-spænd) og Buffett-indikatoren fra facit som baggrund for regimet, og sig tydeligt, når et papir har "
+            "kort kurshistorik. Hvilke ændringer sænker risikoen mest uden at opgive vækstmålet?" + LANG_SUFFIX)},
+    }]
+    for r in (reports or [])[:2]:
+        day = dmy(dt.date.fromisoformat(r["date"]))
+        alt = ", ".join(dmy(dt.date.fromisoformat(a)) for a in r.get("alt_dates") or [])
+        unsure = (f"; kilderne er uenige: en anden kilde siger {alt}. Bekræft datoen på selskabets investor-side, "
+                  "før du planlægger omkring den") if alt else ""
+        plan.append({
+            "preset": "earnings_research_desk", "label": "Regnskabsdesk",  # aldrig navne i labels: de står i den offentlige log
+            "reason": f"Ugerapport: regnskab {day}" + (f" (eller {alt})" if alt else ""),
+            "vars": {"target": f"{r['ticker']} (regnskab {day}{unsure}; skriv på dansk, beløb også i SEK)"
+                               + (SPACEX_HINT if r["ticker"].startswith("SPCX") else "")},
+            "context": r,
+        })
+    vnames = visser_names(p)
+    if vnames:
+        plan.append({
+            "preset": "visser_panel", "label": "Aktieanalyse: fem agenter pr. aktie",
+            "reason": "Ugerapport: aktieanalyse (fundamentals, nyheder og katalysatorer, trend, risiko, porteføljechef)",
+            "vars": {"names": vnames,
+                     "focus": ("Langsigtet ISK, ingen daghandel: 200-dages-reglen er et lag i analysen. "
+                               + (f"Kommende regnskaber: {', '.join(r['ticker'] + ' ' + dmy(dt.date.fromisoformat(r['date'])) for r in (reports or []))}. "
+                                  if reports else "")
+                               + "Skriv på dansk, DD/MM/YYYY, beløb også i SEK.")},
+        })
+    plan.append({
+        "preset": "macro_strategy_forum", "label": "Strategi og makro", "reason": "Ugerapport: strategi, makro og værdiansættelse",
+        "vars": {"market": (f"globalt aktiemarked (USA, Europa, Norden, emerging markets) for en svensk investor i SEK. Vurdér {basis} "
+                            f"({wtxt}) mod makro, renter, valuta, kreditmarkedet og værdiansættelse (Buffett-indikatoren og CAPE i "
+                            f"facit) over {H} år: hvad bør justeres i målporteføljen, og hvad er de største trusler og muligheder "
+                            f"de næste 3–12 måneder? {rules}Skriv på dansk, beløb i SEK."),
+                 "horizon": f"{H} år (strategisk) med 3–12 måneders udsigt"},
+    })
+    plan.append({
+        "preset": "portfolio_review_board", "label": "Porteføljegennemgang (CIO)",
+        "reason": "Ugerapport: CIO'en samler alle teams til én vurdering og beslutninger",
+        "vars": {"portfolio": ptxt, "review_period": f"Uge {iso_week}: {period}", "goal": ALT_GOAL + LANG_SUFFIX},
+        "cio": True,
+    })
+    skip = {x.strip() for x in os.environ.get("VT_SKIP_PRESETS", "").split(",") if x.strip()}
     plan = [s for s in plan if s["preset"] not in skip or s.get("cio")]
     if len(plan) > max(1, max_swarms):  # behold altid CIO'en
         plan = plan[:max(1, max_swarms) - 1] + [plan[-1]]
@@ -2187,7 +2286,7 @@ def main(argv: list[str] | None = None) -> int:
         con.say(f"FEJL: {exc}")
         set_output(ran="false", status="config_error", week=week["id"])
         return 2
-    plan_kind = os.environ.get("VT_PLAN", "fuld").strip().lower() or "fuld"
+    plan_kind = os.environ.get("VT_PLAN", "alt").strip().lower() or "alt"
 
     period_start = budget_period_start(ref)
     spent_before = month_spent(results, ref)  # også i en tørkørsel, så budgettet kan tjekkes gratis
@@ -2279,7 +2378,7 @@ def main(argv: list[str] | None = None) -> int:
         history = json.loads((results / "index.json").read_text("utf-8")).get("weeks", [])
     except Exception:
         history = []
-    if plan_kind == "strategi" or not portfolio["holdings"]:  # strategikørslen har syv faste teams
+    if plan_kind in ("strategi", "alt") or not portfolio["holdings"]:  # strategi og ugerapporten har op til syv teams
         max_swarms = max(max_swarms, 7)
     plan = build_plan(portfolio, ref, week, max_swarms=max_swarms, plan_kind=plan_kind,
                       force_risk=args.force_risk, reports=reports, history=history,
@@ -2310,10 +2409,15 @@ def main(argv: list[str] | None = None) -> int:
         con.say(f"FEJL ved opstart af Vibe-Trading ({errors[-1]['type']}). Detaljer ligger krypteret i rapporten.")
 
     canary: dict | None = None
+    health: dict | None = None  # kanariefuglens tjek af kæden – også i hver rigtig rapport (gratis, ingen porteføljedata)
+    with contextlib.suppress(Exception):
+        health = kn.summary(canary_checks(portfolio, datacheck, fred_snap, makro_snap, runtime is not None, vt_why))
     if args.canary:
-        canary = kn.summary(canary_checks(portfolio, datacheck, fred_snap, makro_snap, runtime is not None, vt_why))
+        canary = health or kn.summary(canary_checks(portfolio, datacheck, fred_snap, makro_snap, runtime is not None, vt_why))
         for line in kn.console_lines(canary["checks"]):
             con.say(line)
+    elif health:
+        con.say(f"Kæde-tjek (kanariefuglen): {health['status']} · {health['ok']} ok, {health['warn']} advarsler, {health['fail']} fejl")
 
     used_usd = 0.0
     if not args.dry_run:
@@ -2332,7 +2436,8 @@ def main(argv: list[str] | None = None) -> int:
         system_extra: dict[str, str] = dict(step.get("system_extra") or {})
         if step.get("cio"):
             system_extra.setdefault("chief_investment_officer", CIO_DECISION_EXTRA)
-            step["vars"]["goal"] = step["vars"]["goal"] + dtj.cio_instruction(datacheck) + journal_instruction(portfolio)
+            step["vars"]["goal"] = (step["vars"]["goal"] + dtj.cio_instruction(datacheck) + journal_instruction(portfolio)
+                                    + health_note(health))
             digest = cio_digest(runs)
             if args.dry_run:
                 step["vars"]["goal"] += digest
@@ -2404,7 +2509,7 @@ def main(argv: list[str] | None = None) -> int:
                       "cash_reserved_sek": portfolio.get("cash_reserved_sek") or 0.0,
                       "weights_cost": cost_weights(portfolio)},
         "upcoming_reports": reports, "plan": [{"preset": s["preset"], "reason": s["reason"]} for s in plan],
-        "datacheck": datacheck, "eodhd": eodhd_info, "fred": fred_snap, "makro_eu": makro_snap,
+        "datacheck": datacheck, "eodhd": eodhd_info, "fred": fred_snap, "makro_eu": makro_snap, "health": health,
         "runs": runs,
         "totals": {"tokens_in": tin, "tokens_out": tout, "duration_s": round(time.monotonic() - t0),
                    "est_cost_usd": round(sum(r.get("est_cost_usd", 0) for r in runs), 2),
@@ -2444,6 +2549,16 @@ def main(argv: list[str] | None = None) -> int:
     set_output(ran="true", status=status, week=week["id"], run_id=run_id, day=kn.day_label(generated),
                result_file=str(result_file or results / "weeks" / f"{run_id}.enc.json"))
     return 0
+
+
+def health_note(health: dict | None) -> str:
+    """Kæde-tjekket (samme tjek som kanariefuglen) som én linje til CIO'en."""
+    if not health:
+        return ""
+    bad = [f"{c['label']}: {c['note']}" for c in health.get("checks") or [] if c.get("ok") is not True]
+    return (f"\n\nKæde-tjek (kanariefuglen) i denne kørsel: {health['status']} ({health['ok']} ok, {health['warn']} advarsler, "
+            f"{health['fail']} fejl)" + (". Afvigelser: " + " | ".join(bad[:6]) if bad else "") +
+            ". Nævn det kort under Datakvalitet, hvis det påvirker konklusionen.")
 
 
 def canary_checks(portfolio: dict, datacheck: dict | None, fred_snap: dict | None, makro_snap: dict | None,

@@ -23,12 +23,12 @@ on:
   workflow_dispatch:
     inputs:
       plan:
-        description: "fuld = alle relevante teams, kerne = kun risiko + CIO, strategi = byg porteføljen fra kontant (7 teams, mandat fra Vibetrad → Plan)"
+        description: "alt = ugerapporten med alle teams på den valgte portefølje (standard). Ældre valg: fuld, kerne, strategi"
         type: choice
-        options: [fuld, kerne, strategi]
-        default: fuld
+        options: [alt, fuld, kerne, strategi]
+        default: alt
       budget_usd:
-        description: "Maks. forbrug for denne kørsel i USD (tom = standard 35). Månedsloftet gælder stadig."
+        description: "Maks. forbrug for denne kørsel i USD (tom = standard 45). Månedsloftet gælder stadig."
         type: string
         default: ""
       monthly_budget_usd:
@@ -68,10 +68,10 @@ jobs:
       ANTHROPIC_BASE_URL: https://api.anthropic.com
       # Loft for ét svar inkl. tænkning. 16384 var for lidt: CIO-rapporten 20/10/2026 blev skåret midt i en sætning.
       ANTHROPIC_MAX_TOKENS: "32000"
-      VT_PLAN: ${{ inputs.plan || vars.VT_PLAN || 'fuld' }}
-      VT_MAX_SWARMS: ${{ vars.VT_MAX_SWARMS || '6' }}
+      VT_PLAN: ${{ inputs.plan || vars.VT_PLAN || 'alt' }}
+      VT_MAX_SWARMS: ${{ vars.VT_MAX_SWARMS || '7' }}
       VT_SCHEDULE: ${{ vars.VT_SCHEDULE || 'off' }}
-      VT_RUN_BUDGET_USD: ${{ inputs.budget_usd || vars.VT_RUN_BUDGET_USD || '35' }}
+      VT_RUN_BUDGET_USD: ${{ inputs.budget_usd || vars.VT_RUN_BUDGET_USD || '45' }}
       VT_MONTHLY_BUDGET_USD: ${{ inputs.monthly_budget_usd || vars.VT_MONTHLY_BUDGET_USD || '95' }}
       # Max-abonnementets API-kredit fornyes d. 23. (faktureringsdagen); månedsloftet følger den.
       VT_BUDGET_RESET_DAY: ${{ vars.VT_BUDGET_RESET_DAY || '23' }}

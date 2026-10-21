@@ -343,7 +343,7 @@ def test_dry_run_flags_agent_without_report_and_shows_real_spend(tmp_path):
         {"run_id": "2026-W41", "generated_at": "2026-10-15T12:23:38+02:00", "cost_usd": 10.04, "dry_run": False},
         {"run_id": "t", "generated_at": "2026-10-15T19:28:47+02:00", "cost_usd": 0.05, "dry_run": True}]}))
     pf = dict(PORTFOLIO, monthly_deposit_sek=15000, courtage_class="Medium")
-    p = run_main(tmp_path, "--event", "workflow_dispatch", "--now", "2026-10-16T12:00", VT_BUDGET_RESET_DAY="23",
+    p = run_main(tmp_path, "--event", "workflow_dispatch", "--now", "2026-10-16T12:00", VT_BUDGET_RESET_DAY="23", VT_PLAN="fuld",
                  VT_DRY_EMPTY="risk_committee", VT_PORTFOLIO=json.dumps(pf))
     assert p.returncode == 0, p.stderr
     assert "brugt siden 23/09/2026: 10.04 af 95 USD" in p.stdout  # tørkørslen viser nu det rigtige forbrug
@@ -572,7 +572,7 @@ def test_unexpected_error_shows_where_but_never_the_message(tmp_path, monkeypatc
 
 
 def test_end_to_end_dry_run_first_saturday(tmp_path):
-    p = run_main(tmp_path, "--event", "schedule", "--now", "2026-10-03T08:01")  # uge 40 (lige), første lørdag
+    p = run_main(tmp_path, "--event", "schedule", "--now", "2026-10-03T08:01", VT_PLAN="fuld")  # uge 40 (lige), første lørdag
     assert p.returncode == 0, p.stderr
     log = p.stdout + p.stderr
     for secret in ("ZZTOP", "QQQX", "Hemmelig", "21480", "21 480", "reserveret"):
@@ -1424,3 +1424,64 @@ def test_weekly_cio_gets_the_decision_table_first():
     ref = sto("2026-10-17T08:00")
     plan = rw.build_plan(p, ref, rw.week_window(ref), reports=[])
     assert plan[-1]["cio"] and "system_extra" not in plan[-1]  # ugeplanen: CIO_DECISION_EXTRA lægges på i kørslen
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Ugerapporten med alle teams (plan "alt", standard fra fix39)
+# ---------------------------------------------------------------------------------------------------------------
+def test_alt_plan_covers_every_team_on_holdings():
+    p = rw.load_portfolio(json.dumps(PORTFOLIO))
+    ref = dt.datetime(2026, 10, 21, 12, 0, tzinfo=rw.STO)
+    reports = [{"ticker": "VOLV-B.ST", "name": "Volvo B", "date": "2026-10-23", "source": "datatjek"}]
+    plan = rw.build_plan(p, ref, rw.week_window(ref), max_swarms=7, plan_kind="alt", reports=reports)
+    presets = [s["preset"] for s in plan]
+    assert presets[0] == "risk_committee" and presets[-1] == "portfolio_review_board" and plan[-1].get("cio")
+    assert "earnings_research_desk" in presets and "macro_strategy_forum" in presets
+    assert ("visser_panel" in presets) == bool(rw.visser_names(p))
+    assert all("Volvo" not in (s.get("label") or "") for s in plan)  # labels står i den offentlige log
+    assert "ALLE ugens teams" in plan[-1]["vars"]["goal"]
+    assert "beholdningen" in plan[0]["vars"]["goal"] and "2008-lignende fald" in plan[0]["vars"]["goal"]
+
+
+def test_alt_plan_uses_the_target_portfolio_when_all_is_cash():
+    tgt = {**CASH_ONLY, "target": [{"name": "Global", "ticker": "VWCE.XETRA", "type": "etf", "weight": 60},
+                                   {"name": "Raket", "ticker": "SPCX.US", "type": "aktie", "weight": 30},
+                                   {"name": "Kontant", "ticker": "", "type": "kontant", "weight": 10}]}
+    p = rw.load_portfolio(json.dumps(tgt))
+    ref = dt.datetime(2026, 10, 21, 12, 0, tzinfo=rw.STO)
+    plan = rw.build_plan(p, ref, rw.week_window(ref), max_swarms=7, plan_kind="alt")
+    presets = [s["preset"] for s in plan]
+    assert presets == ["risk_committee", "visser_panel", "macro_strategy_forum", "portfolio_review_board"]
+    assert "målporteføljen (endnu ikke købt" in plan[0]["vars"]["goal"] and "VWCE.XETRA 60 %" in plan[0]["vars"]["goal"]
+    assert "Raket (SPCX.US, målportefølje 30 %" in plan[1]["vars"]["names"]
+    th = rw.target_holdings(p)
+    assert [t["kind"] for t in th] == ["etf", "stock"]
+    # regnskaber kigger også på målporteføljens aktier
+    reps = rw.upcoming_reports(p, ref, horizon_days=14, lookup=None, verified={"SPCX.US": "2026-10-28"})
+    assert [r["ticker"] for r in reps] == ["SPCX.US"]
+    # uden målportefølje og uden beholdning: strategikørslen bygger fra kontant
+    p0 = rw.load_portfolio(json.dumps(CASH_ONLY))
+    assert rw.build_plan(p0, ref, rw.week_window(ref), max_swarms=7, plan_kind="alt")[0]["preset"] == "macro_strategy_forum"
+
+
+def test_alt_is_default_and_every_report_carries_the_chain_check(tmp_path):
+    p = run_main(tmp_path, "--event", "workflow_dispatch", "--now", "2026-10-21T12:00")
+    assert p.returncode == 0, p.stderr
+    log = p.stdout
+    assert "Plan: Risiko og stresstest" in log and "Strategi og makro" in log and "Porteføljegennemgang (CIO)" in log
+    assert "Kæde-tjek (kanariefuglen): " in log
+    o = outputs(tmp_path)
+    env = json.loads(Path(o["result_file"]).read_text())
+    data = rw.decrypt(env, PASS)
+    assert data["totals"]["plan_kind"] == "alt"
+    assert data["health"]["status"] in ("ok", "warn", "fail") and data["health"]["checks"]
+    assert any(r["preset"] == "portfolio_review_board" for r in data["runs"])
+    assert "Volvo" not in log and "VOLV" not in log
+
+
+def test_health_note_lists_only_problems():
+    h = {"status": "warn", "ok": 2, "warn": 1, "fail": 0,
+         "checks": [{"label": "FRED", "ok": True, "note": "fint"}, {"label": "Datatjek", "ok": None, "note": "ADVARSEL · 1 advarsel"}]}
+    t = rw.health_note(h)
+    assert "Kæde-tjek (kanariefuglen)" in t and "Datatjek: ADVARSEL" in t and "FRED" not in t
+    assert rw.health_note(None) == ""
