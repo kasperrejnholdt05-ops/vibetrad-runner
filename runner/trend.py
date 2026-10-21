@@ -15,6 +15,7 @@ præciseringer af en mundtlig beskrivelse:
 """
 from __future__ import annotations
 
+import datetime as dt
 from typing import Any, Sequence
 
 SMA_DAYS = 200
@@ -90,3 +91,96 @@ def rule_text() -> str:
     return (f"over {SMA_DAYS}-dages gennemsnit, gennemsnittet stigende over {SLOPE_DAYS} dage; "
             f"købsvindue når ROC({ROC_DAYS} dage) er inden for ±{RESET_BAND:g} % efter at have været mindst "
             f"+{HOT_PEAK:g} % inden for de forrige {ROC_DAYS} dage")
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# 5-års-testen af reglen og spredningen – samme regnemåde som Vibetrads side (Trendvagt, Handelstjek, beslutningskort),
+# så agenterne og Kasper ser de samme tal. Begge bruger de dagskurser, trendvagten allerede har hentet (ingen ekstra kald).
+# ---------------------------------------------------------------------------------------------------------------
+HIST_DAYS = 5 * 365 + 320   # ca. 5 år efter de første 200 dage, der går til gennemsnittet
+HIST_MIN_ROWS = SMA_DAYS + 260  # mindst ca. ét års test
+HIST_LABELS = {"good": "reglen dæmpede faldene", "cost": "reglen kostede afkast",
+               "mixed": "mindre fald, men lavere afkast", "none": "ingen klar forskel", "short": "for kort historik"}
+SPREAD_LABELS = {"low": "spreder kun lidt", "some": "spreder noget", "good": "spreder godt"}
+
+
+def _max_dd(eq: Sequence[float]) -> float:
+    pk, dd = float("-inf"), 0.0
+    for v in eq:
+        pk = max(pk, v)
+        dd = min(dd, v / pk - 1)
+    return dd * 100
+
+
+def history(rows: Sequence[tuple[str, float]], cost_pct: float = 0.5) -> dict[str, Any]:
+    """Forenklet backtest: ejer papiret, når lukkekursen ligger over 200-dages-gennemsnittet, ellers kontanter (0 %).
+    Positionen fra dagens lukkekurs gælder næste dags afkast; ``cost_pct`` trækkes ved hvert skift ind eller ud."""
+    rows = [(d, float(c)) for d, c in rows if c and c > 0]
+    if len(rows) < HIST_MIN_ROWS:
+        return {"verdict": "short", "label": HIST_LABELS["short"], "rows": len(rows)}
+    c = [x[1] for x in rows]
+    n = len(c)
+    pos = [0] * n
+    s = sum(c[:SMA_DAYS])
+    for i in range(SMA_DAYS - 1, n):
+        if i >= SMA_DAYS:
+            s += c[i] - c[i - SMA_DAYS]
+        pos[i] = 1 if c[i] > s / SMA_DAYS else 0
+    start = SMA_DAYS - 1
+    eq, bh, trades, inside = [1.0], [1.0], 0, 0
+    for i in range(start + 1, n):
+        r = c[i] / c[i - 1] - 1
+        e = eq[-1] * (1 + pos[i - 1] * r)
+        prev = pos[i - 2] if i - 2 >= start else 0
+        if pos[i - 1] != prev:
+            e *= 1 - cost_pct / 100
+            trades += 1
+        eq.append(e)
+        bh.append(bh[-1] * (1 + r))
+        inside += pos[i - 1]
+    yrs = (dt.date.fromisoformat(rows[-1][0][:10]) - dt.date.fromisoformat(rows[start][0][:10])).days / 365.25
+
+    def cagr(a: list[float]) -> float:
+        return (a[-1] ** (1 / yrs) - 1) * 100 if yrs > 0 else 0.0
+
+    out = {"from": rows[start][0][:10], "to": rows[-1][0][:10], "years": round(yrs, 1), "trades": trades,
+           "exposure_pct": round(inside / max(len(eq) - 1, 1) * 100, 1),
+           "rule_cagr_pct": round(cagr(eq), 2), "rule_max_dd_pct": round(_max_dd(eq), 1),
+           "hold_cagr_pct": round(cagr(bh), 2), "hold_max_dd_pct": round(_max_dd(bh), 1), "rows": n}
+    dd = out["rule_max_dd_pct"] - out["hold_max_dd_pct"]  # > 0: reglen faldt mindre
+    ret = out["rule_cagr_pct"] - out["hold_cagr_pct"]
+    v = "good" if dd >= 10 and ret >= -3 else "cost" if ret <= -3 and dd < 10 else "mixed" if dd >= 10 else "none"
+    out.update(verdict=v, label=HIST_LABELS[v])
+    return out
+
+
+def _iso_week(day: str) -> str:
+    y, w, _ = dt.date.fromisoformat(day[:10]).isocalendar()
+    return f"{y}-{w:02d}"
+
+
+def weekly_returns(rows: Sequence[tuple[str, float]], weeks: int = 104) -> dict[str, float]:
+    """Ugeafkast fra dagskurser (sidste lukkekurs i hver ISO-uge), nøglet på uge, så børser med forskellige
+    helligdage kan sammenlignes."""
+    last: dict[str, float] = {}
+    for d, c in rows:
+        if c and c > 0:
+            last[_iso_week(d)] = float(c)
+    ks = sorted(last)[-(weeks + 1):]
+    return {ks[i]: last[ks[i]] / last[ks[i - 1]] - 1 for i in range(1, len(ks))}
+
+
+def correlation(a: dict[str, float], b: dict[str, float], min_weeks: int = 30) -> float | None:
+    ks = [k for k in a if k in b]
+    if len(ks) < min_weeks:
+        return None
+    x, y = [a[k] for k in ks], [b[k] for k in ks]
+    mx, my = sum(x) / len(x), sum(y) / len(y)
+    sxy = sum((p - mx) * (q - my) for p, q in zip(x, y))
+    sxx = sum((p - mx) ** 2 for p in x)
+    syy = sum((q - my) ** 2 for q in y)
+    return sxy / (sxx * syy) ** 0.5 if sxx > 0 and syy > 0 else None
+
+
+def spread_kind(c: float | None) -> str | None:
+    return None if c is None else "low" if c >= 0.8 else "some" if c >= 0.6 else "good"

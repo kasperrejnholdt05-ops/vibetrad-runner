@@ -706,9 +706,13 @@ def _week_pl_deposits(p: dict, prow: list[dict], px: dict, week: dict, total: fl
     return week_sek, pl, path
 
 
+NORDIC_RE = re.compile(r"\.(ST|CO|OL|HE|IC)$", re.IGNORECASE)
+
+
 def trend_check(insts: list[dict], vt: Any, eod: Any, ref: dt.datetime) -> dict:
-    """Trendvagten (runner/trend.py) på ca. 14 måneders dagskurser: EODHD først, Vibe-Trading som reserve."""
-    start = (ref.date() - dt.timedelta(days=430)).isoformat()
+    """Trendvagten (runner/trend.py) på ca. 6 års dagskurser: EODHD først, Vibe-Trading som reserve.
+    Samme kurser giver 5-års-testen af reglen og spredningen mod beholdning og målportefølje (ingen ekstra kald)."""
+    start = (ref.date() - dt.timedelta(days=tr.HIST_DAYS)).isoformat()
     end = ref.date().isoformat()
     items = []
     for i in insts:
@@ -726,7 +730,24 @@ def trend_check(insts: list[dict], vt: Any, eod: Any, ref: dt.datetime) -> dict:
                 break
             rows = rows or got.get("rows") or []
         st = tr.status(rows)
-        items.append({"ticker": i["ticker"], "name": i["name"], "role": i["role"], "source": src, **st})
+        cost = 0.1 if NORDIC_RE.search(i["ticker"]) else 0.5  # anslået kurtage + veksling pr. skift
+        items.append({"ticker": i["ticker"], "name": i["name"], "role": i["role"], "source": src, **st,
+                      "history": tr.history(rows, cost) if rows else None,
+                      "_wk": tr.weekly_returns(rows) if rows else {}})
+    core = [x for x in items if x["role"] in ("beholdning", "målportefølje") and x["_wk"]]
+    for x in items:
+        best = None
+        for o in core:
+            if o["ticker"] == x["ticker"]:
+                continue
+            c = tr.correlation(x["_wk"], o["_wk"])
+            if c is not None and (best is None or c > best[0]):
+                best = (c, o["name"], o["ticker"])
+        x["spread"] = ({"max_corr": round(best[0], 2), "with": best[1], "with_ticker": best[2],
+                        "kind": tr.spread_kind(best[0]), "label": tr.SPREAD_LABELS[tr.spread_kind(best[0])]}
+                       if best else None)
+    for x in items:
+        x.pop("_wk", None)
     return {"rule": tr.rule_text(), "items": items}
 
 
@@ -1136,11 +1157,27 @@ def trend_lines(dc: dict | None) -> list[str]:
             continue
         out.append(f"- {x['name']} ({x['ticker']}, {x['role']}): {x['label']} · kurs {_nf(x['close'])} mod 200 dage "
                    f"{_nf(x['sma200'])} ({_sp(x['dist_pct'])}) · hældning {_sp(x['slope_pct'], 2)} på 20 dage · "
-                   f"ROC 63 dage {_sp(x['roc63_pct'])} (top {_sp(x['roc63_peak_pct'])}) · {dmy(x.get('date'))}")
+                   f"ROC 63 dage {_sp(x['roc63_pct'])} (top {_sp(x['roc63_peak_pct'])}) · {dmy(x.get('date'))}"
+                   + _hist_spread(x))
+    if any((x.get("history") or {}).get("verdict") not in (None, "short") for x in items):
+        out.append("5 år = forenklet test af reglen (ejer papiret over 200-dages-gennemsnittet, ellers kontanter) mod at beholde; "
+                   "spredning = højeste korrelation af ugeafkast over 2 år mod beholdning og målportefølje (1 = følges ad, "
+                   "under 0,5 = god spredning). Samme tal står på Vibetrads side – brug dem, og sig det, hvis dine egne afviger.")
     return out
 
 
-def agent_brief(dc: dict | None, limit: int = 6800) -> str:
+def _hist_spread(x: dict) -> str:
+    h, sp = x.get("history") or {}, x.get("spread")
+    bits = []
+    if h and h.get("verdict") not in (None, "short"):
+        bits.append(f"5 år: regel {_sp(h['rule_cagr_pct'])}/år (største fald {_nf(h['rule_max_dd_pct'], 0)} %, "
+                    f"{h['trades']} skift) mod behold {_sp(h['hold_cagr_pct'])}/år ({_nf(h['hold_max_dd_pct'], 0)} %) – {h['label']}")
+    if sp:
+        bits.append(f"spredning: højest {_nf(sp['max_corr'], 2)} mod {sp['with']} ({sp['label']})")
+    return (" · " + " · ".join(bits)) if bits else ""
+
+
+def agent_brief(dc: dict | None, limit: int = 8000) -> str:
     """Kompakt facit (markdown), som alle agenter får i deres instruks."""
     if not dc:
         return ""
@@ -1237,7 +1274,10 @@ def cio_instruction(dc: dict | None) -> str:
              "for hver position og købskandidat, om trenden er med eller imod tesen, og hvad det betyder. Står et "
              "papir 'Under 200 dage' eller 'Brud', skal et køb eller en øgning have en eksplicit grund (fx værdi), og "
              "en position, man ejer, skal revurderes. Brug reglen som et lag i analysen, ikke som et handelssignal; "
-             "porteføljen handles ikke tit." if (dc.get("trend") or {}).get("items") else "")
+             "porteføljen handles ikke tit. Facit har også '5 år' (har reglen faktisk hjulpet på netop det papir?) og "
+             "'spredning' (bevæger papiret sig som noget, investoren allerede ejer eller vil eje?). Brug begge i 'Trend mod "
+             "tese' og i beslutningstabellen: et køb, der 'spreder kun lidt', skal have en anden grund end spredning, og "
+             "hvor reglen 'kostede afkast' på papiret, vejer trenden mindre." if (dc.get("trend") or {}).get("items") else "")
     extra += ("\n\nDatakvalitet: Vibetrads datatjek (Vibe-Trading × EODHD) gav status "
              f"{dc['status']}. Medtag et kort afsnit 'Datakvalitet' i rapporten: hvilke afvigelser påvirker "
              "konklusionen, og hvilke tal du har brugt.")

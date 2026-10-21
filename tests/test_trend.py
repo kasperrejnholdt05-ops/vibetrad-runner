@@ -117,3 +117,50 @@ def test_visser_preset_is_shellfree_and_gets_eodhd(tmp_path, monkeypatch):
     assert spec["tasks"][-1]["depends_on"] == ["task-fundamentals", "task-catalysts", "task-trend", "task-risk"]
     # uden eksplicit kilde-mappe tages de egne presets ikke med (testene af de indbyggede presets)
     assert rw.prepare_shellfree_presets(tmp_path / "dst2", empty) == []
+
+
+def test_history_rule_vs_hold_matches_the_page_logic():
+    # Stiger, styrtdykker 50 % og kommer igen: reglen går ud under faldet og dæmper det største fald
+    up = [100 * 1.001 ** i for i in range(600)]
+    crash = [up[-1] * (1 - 0.5 * k / 120) for k in range(1, 121)]
+    rec = [crash[-1] * 1.002 ** k for k in range(1, 700)]
+    h = tr.history(rows_from(up + crash + rec), cost_pct=0.5)
+    assert h["verdict"] in ("good", "mixed") and h["rule_max_dd_pct"] > h["hold_max_dd_pct"] + 10
+    assert h["trades"] >= 2 and 0 < h["exposure_pct"] < 100 and h["years"] > 3
+    assert h["label"] == tr.HIST_LABELS[h["verdict"]]
+    # Jævn stigning: reglen er altid inde efter de første 200 dage = ingen forskel bortset fra én handel
+    steady = tr.history(rows_from([100 * 1.0005 ** i for i in range(900)]), cost_pct=0.5)
+    assert steady["verdict"] == "none" and steady["trades"] == 1 and steady["exposure_pct"] == 100.0
+    assert tr.history(rows_from([100.0] * 300))["verdict"] == "short"
+
+
+def test_weekly_returns_and_correlation_line_up_by_iso_week():
+    import math
+    a = [100 + 10 * math.sin(i / 9) + i * 0.05 for i in range(800)]
+    b = [x * 1.5 for x in a]                       # samme bevægelse = korrelation 1
+    c = [100 + 10 * math.cos(i / 4.3) for i in range(800)]  # andet mønster
+    wa, wb, wc = (tr.weekly_returns(rows_from(x)) for x in (a, b, c))
+    assert len(wa) == 104 and tr.correlation(wa, wb) > 0.999
+    assert abs(tr.correlation(wa, wc)) < 0.6
+    assert tr.spread_kind(0.9) == "low" and tr.spread_kind(0.7) == "some" and tr.spread_kind(0.2) == "good"
+    assert tr.correlation(wa, {}) is None
+
+
+def test_trend_check_adds_history_and_spread_to_the_facit():
+    import math
+    base = [100 + 10 * math.sin(i / 9) + i * 0.08 for i in range(1500)]
+    insts = [{"ticker": "VWCE.XETRA", "name": "Global", "role": "målportefølje"},
+             {"ticker": "EXSA.XETRA", "name": "DAX", "role": "målportefølje"},
+             {"ticker": "NEW.US", "name": "Ny", "role": "overvågning"}]
+    eod = Src({"VWCE.XETRA": rows_from(base), "EXSA.XETRA": rows_from([x * 2 for x in base]),
+               "NEW.US": rows_from([100 + 10 * math.cos(i / 4.3) + i * 0.02 for i in range(1500)])})
+    t = dtj.trend_check(insts, Src({}, available=False), eod, dt.datetime(2026, 10, 20, tzinfo=rw.STO))
+    by = {x["ticker"]: x for x in t["items"]}
+    assert by["VWCE.XETRA"]["spread"]["with_ticker"] == "EXSA.XETRA" and by["VWCE.XETRA"]["spread"]["kind"] == "low"
+    assert by["NEW.US"]["spread"]["kind"] in ("good", "some") and by["NEW.US"]["history"]["verdict"] != "short"
+    assert all("_wk" not in x for x in t["items"])
+    lines = dtj.trend_lines({"trend": t})
+    assert any("5 år: regel" in x and "spredning: højest" in x for x in lines)
+    assert any(x.startswith("5 år = forenklet test") for x in lines)
+    cio = dtj.cio_instruction({"status": "PASS", "trend": t})
+    assert "'spredning'" in cio and "'5 år'" in cio

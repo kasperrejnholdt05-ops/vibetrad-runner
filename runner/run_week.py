@@ -401,7 +401,8 @@ DECISION_RULES = (
     "Handling er én af: køb, øg, reducér, sælg, hold, afvent, revurdér. Papir er tickeren (SYMBOL.BØRS). Beløb SEK er et "
     "tal uden mellemrum eller tomt. Hvorfor er én kort sætning på almindeligt dansk med det tal, der afgør det. Hvornår er "
     "DD/MM/YYYY eller 'nu'. Jeg tager fejl, hvis er en målbar betingelse. Højst 6 rækker og kun det, investoren skal tage "
-    "stilling til før næste kørsel; er der intet, så én række: | hold | – | | Ingen handling nødvendig | | |"
+    "stilling til før næste kørsel; er der intet, så én række: | hold | – | | Ingen handling nødvendig | | |. Investoren er "
+    "ikke aktieekspert: skriv uden fagord, eller forklar dem kort i parentes (fx 'under trendlinjen (200-dages gennemsnit)')."
 )
 CIO_DECISION_EXTRA = (
     "## Rapportens start (Vibetrad)\n"
