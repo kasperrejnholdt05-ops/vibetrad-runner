@@ -51,8 +51,11 @@ on:
 permissions:
   contents: write
 
+# Kanariefuglen har sin egen kø: i samme kø ventede den 21/10/2026 bag en ugerapport på flere timer og blev annulleret
+# sammen med den (GitHub holder kun én ventende kørsel pr. kø). Push-trinnet fletter results/, så to samtidige
+# kørsler aldrig overskriver hinanden.
 concurrency:
-  group: vibetrad-weekly
+  group: ${{ (inputs.canary || github.event.schedule == '30 3 * * *') && 'vibetrad-canary' || 'vibetrad-weekly' }}
   cancel-in-progress: false
 
 jobs:

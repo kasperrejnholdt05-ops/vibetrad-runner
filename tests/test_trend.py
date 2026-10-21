@@ -95,7 +95,7 @@ def test_target_from_vt_portfolio_reaches_instruments_text_and_visser_names():
     assert roles["SATL.CO"] == "målportefølje" and roles["KERNE.XETRA"] == "beholdning" and "SKAL-IKKE-MED" not in str(roles)
     names = rw.visser_names(p)
     assert names.startswith("Hemmelig Raket (ZZTOP.US, beholdning") and "Satellit (SATL.CO, målportefølje 15 %, købes tidligst 05/11/2026)" in names
-    assert "WATCH.ST, overvågning: kandidat" in names and "KERNE" not in names
+    assert "WATCH.ST (overvågning: kandidat)" in names and "WATCH.ST (WATCH.ST" not in names and "KERNE" not in names
 
 
 def test_visser_preset_is_shellfree_and_gets_eodhd(tmp_path, monkeypatch):
@@ -164,3 +164,18 @@ def test_trend_check_adds_history_and_spread_to_the_facit():
     assert any(x.startswith("5 år = forenklet test") for x in lines)
     cio = dtj.cio_instruction({"status": "PASS", "trend": t})
     assert "'spredning'" in cio and "'5 år'" in cio
+
+
+def test_target_beats_watchlist_role():
+    """Et papir i både målporteføljen og på overvågningslisten er en målposition (Novo 21/10/2026): ellers mister det
+    spredningstjekket og CIO'ens "Trend mod tese". Listens note følger med."""
+    p = {"holdings": [{"ticker": "HELD.ST", "kind": "stock"}],
+         "watchlist": [{"ticker": "BOTH.CO", "note": "alarm under 100"}, {"ticker": "HELD.ST", "note": "ejet"},
+                       {"ticker": "ONLY.US", "note": ""}],
+         "target": [{"name": "Begge", "ticker": "BOTH.CO", "type": "aktie", "weight": 15},
+                    {"name": "Kerne", "ticker": "CORE.XETRA", "type": "etf", "weight": 60}]}
+    ins = {i["ticker"]: i for i in dtj.instruments(p)}
+    assert ins["BOTH.CO"]["role"] == "målportefølje" and ins["BOTH.CO"]["note"] == "alarm under 100"
+    assert ins["BOTH.CO"]["target_pct"] == 15
+    assert ins["HELD.ST"]["role"] == "beholdning" and ins["ONLY.US"]["role"] == "overvågning"
+    assert ins["CORE.XETRA"]["kind"] == "etf" and list(ins).count("BOTH.CO") == 1

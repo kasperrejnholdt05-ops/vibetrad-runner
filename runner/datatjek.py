@@ -189,15 +189,20 @@ class VibeTradingSource:
         for group, source in ((rest, "auto"), (eu, "yfinance")):
             if not group:
                 continue
+            # yfinance kender kun Yahoos suffikser: VWCE.XETRA hedder VWCE.DE (ellers "kun EODHD har kurs" for
+            # målporteføljens ETF'er, datatjekket 21/10/2026). Nordiske symboler er ens i begge.
+            ysym = {c: (eo.to_yahoo(c) if source == "yfinance" else c) for c in group}
             try:
-                res = fetch_market_data(codes=group, start_date=start, end_date=end, source=source, max_rows=0,
+                res = fetch_market_data(codes=list(dict.fromkeys(ysym.values())), start_date=start, end_date=end,
+                                        source=source, max_rows=0,
                                         fallback_chain_provider=self._provider, include_provenance=True)
             except Exception as exc:  # noqa: BLE001
                 self.errors.append(f"Kurser ({source}): {type(exc).__name__}")
                 continue
             prov = res.get("_provenance") or {}
+            prov = {c: prov.get(ysym[c]) or prov.get(c) for c in group}
             for code in group:
-                recs = res.get(code)
+                recs = res.get(ysym[code]) if ysym[code] in res else res.get(code)
                 if isinstance(recs, dict):
                     recs = recs.get("data")
                 rows = []
@@ -359,19 +364,26 @@ def instruments(p: dict) -> list[dict]:
         seen.add(t)
         out.append({"ticker": t, "name": h.get("name") or t, "role": "beholdning", "kind": h.get("kind") or "stock",
                     "qty": _num(h.get("qty")), "max_weight": _num(h.get("max_weight"))})
-    for w in p.get("watchlist") or []:
-        t = norm_ticker(w.get("ticker")) if isinstance(w, dict) else ""
-        if t and t not in seen:
-            seen.add(t)
-            out.append({"ticker": t, "name": w.get("name") or t, "role": "overvågning", "kind": w.get("kind") or "stock",
-                        "note": w.get("note")})
-    # Målporteføljen fra strategikørslen (Vibetrad → Plan): også de papirer, der endnu ikke er købt
+    # Målporteføljen fra strategikørslen (Vibetrad → Plan): også de papirer, der endnu ikke er købt. Den kommer FØR
+    # overvågningslisten: et papir, der både er i målporteføljen og på listen (Novo 21/10/2026), er en målposition –
+    # ellers mister det spredningstjekket og CIO'ens "Trend mod tese".
     for g in p.get("target") or []:
         t = norm_ticker(g.get("ticker")) if isinstance(g, dict) and g.get("ticker") else ""
         if t and t not in seen and g.get("type") != "kontant":
             seen.add(t)
             out.append({"ticker": t, "name": g.get("name") or t, "role": "målportefølje",
                         "kind": "etf" if g.get("type") in ("etf", "fond") else "stock", "target_pct": _num(g.get("weight"))})
+    by_t = {x["ticker"]: x for x in out}
+    for w in p.get("watchlist") or []:
+        t = norm_ticker(w.get("ticker")) if isinstance(w, dict) else ""
+        if t and t in by_t:  # samme papir på listen: behold rollen, men tag noten med (fx en kursalarm)
+            if w.get("note") and not by_t[t].get("note"):
+                by_t[t]["note"] = w.get("note")
+            continue
+        if t and t not in seen:
+            seen.add(t)
+            out.append({"ticker": t, "name": w.get("name") or t, "role": "overvågning", "kind": w.get("kind") or "stock",
+                        "note": w.get("note")})
     if BENCHMARK not in seen:
         out.append({"ticker": BENCHMARK, "name": "iShares MSCI ACWI (sammenligning)", "role": "benchmark", "kind": "etf"})
     return out

@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -723,3 +724,22 @@ def test_etf_profile_with_na_sections_and_a_crashing_profile_never_break_the_che
     bad = Boom("EODHD", eod._px, {}, eod._earn, {})
     dc = dtj.run(P, WEEK, REF, vt=vt, eod=bad)
     assert dc["status"] in ("PASS", "ADVARSEL", "FEJL") and any("Profil" in e for e in bad.errors)
+
+
+def test_vibe_trading_prices_use_yahoo_suffix_for_xetra(monkeypatch):
+    """Datatjekket 21/10/2026: "kun EODHD har kurs" for VWCE.XETRA og EXSA.XETRA, fordi yfinance kun kender VWCE.DE."""
+    seen = {}
+
+    def fake_fetch(codes, start_date, end_date, source, **kw):
+        seen[source] = list(codes)
+        rows = [{"trade_date": "2026-10-19", "close": 10.0}, {"trade_date": "2026-10-20", "close": 11.0}]
+        return {**{c: rows for c in codes}, "_provenance": {c: {"source": source} for c in codes}}
+
+    mod = types.ModuleType("src.market_data")
+    mod.fetch_market_data = fake_fetch
+    monkeypatch.setitem(sys.modules, "src", types.ModuleType("src"))
+    monkeypatch.setitem(sys.modules, "src.market_data", mod)
+    out = dtj.VibeTradingSource().prices(["VWCE.XETRA", "NOVO-B.CO", "NVDA.US"], "2026-10-01", "2026-10-20")
+    assert seen["yfinance"] == ["VWCE.DE", "NOVO-B.CO"] and seen["auto"] == ["NVDA.US"]
+    assert set(out) == {"VWCE.XETRA", "NOVO-B.CO", "NVDA.US"}
+    assert out["VWCE.XETRA"]["rows"][-1] == ("2026-10-20", 11.0) and out["VWCE.XETRA"]["source"] == "yfinance"

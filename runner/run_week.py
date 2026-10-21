@@ -958,7 +958,8 @@ def visser_names(p: dict, limit: int = 8) -> str:
             continue
         seen.add(t)
         note = re.sub(r"\s+", " ", str(x.get("note") or "")).strip()[:80]
-        out.append(f"{x.get('name') or t} ({t}, overvågning{': ' + note if note else ''})")
+        out.append(f"{x['name']} ({t}, overvågning" if x.get("name") else f"{t} (overvågning")
+        out[-1] += f": {note})" if note else ")"
     return "; ".join(out[:limit])
 
 

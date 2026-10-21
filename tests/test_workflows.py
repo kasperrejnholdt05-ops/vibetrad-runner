@@ -87,3 +87,16 @@ def test_merge_results_is_idempotent_and_keeps_the_newest_latest(tmp_path):
     assert json.loads((results / "latest.enc.json").read_text())["public"]["run_id"] == "2026-W42_b"
     assert (results / "weeks" / "2026-W42_a.enc.json").exists()
     assert rw.month_spent(results, rw.now_sto("2026-10-18T12:00")) == 15.5
+
+
+def test_canary_has_its_own_queue_and_paid_runs_never_cancel_each_other():
+    """21/10/2026: den natlige kanariefugl ventede bag en ugerapport og blev annulleret med den – den har aldrig
+    nået at skrive results/canary.json. Den har nu sin egen kø; ugerapporterne afbryder aldrig hinanden."""
+    wf = _load("vibetrad-weekly.yml")
+    c = wf["concurrency"]
+    assert c["cancel-in-progress"] is False
+    g = c["group"]
+    assert "'vibetrad-canary'" in g and "'vibetrad-weekly'" in g
+    assert "inputs.canary" in g and "github.event.schedule == '30 3 * * *'" in g
+    on = wf.get("on", wf.get(True))
+    assert {"cron": "30 3 * * *"} in on["schedule"]
