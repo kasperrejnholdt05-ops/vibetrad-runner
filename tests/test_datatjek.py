@@ -699,3 +699,27 @@ def test_cash_only_portfolio_runs_and_brief_has_no_holdings():
     assert dc["status"] == "PASS" and dc["issues"] == [] and dc["portfolio"]["total_sek"] == 40000.5
     brief = dtj.agent_brief(dc)
     assert isinstance(brief, str) and "40000" not in brief
+
+
+
+def test_etf_profile_with_na_sections_and_a_crashing_profile_never_break_the_check():
+    # EODHD sender "Highlights": "NA" for ETF'er (set 21/10/2026: AttributeError stoppede hele datatjekket)
+    class Client:
+        available = True
+
+        def fundamentals(self, code, sections=()):
+            return {"General": {"Name": "Vanguard FTSE All-World", "CurrencyCode": "EUR", "Type": "ETF"},
+                    "Highlights": "NA", "Valuation": "NA"}
+
+    src = dtj.EodhdSource(Client())
+    prof = src.profile("VWCE.XETRA")
+    assert prof["name"] == "Vanguard FTSE All-World" and prof["market_cap"] is None and prof["type"] == "ETF"
+
+    class Boom(Fake):
+        def profile(self, code):
+            raise AttributeError("'str' object has no attribute 'get'")
+
+    vt, eod = sources()
+    bad = Boom("EODHD", eod._px, {}, eod._earn, {})
+    dc = dtj.run(P, WEEK, REF, vt=vt, eod=bad)
+    assert dc["status"] in ("PASS", "ADVARSEL", "FEJL") and any("Profil" in e for e in bad.errors)

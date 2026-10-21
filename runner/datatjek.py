@@ -286,7 +286,8 @@ class EodhdSource:
         except eo.EodhdError as exc:
             self.errors.append(str(exc))
             return {}
-        g, h, v = f.get("General") or {}, f.get("Highlights") or {}, f.get("Valuation") or {}
+        # ETF'er og fonde: EODHD sender sektioner som "NA" (tekst) i stedet for et objekt
+        g, h, v = (f.get(k) if isinstance(f.get(k), dict) else {} for k in ("General", "Highlights", "Valuation"))
         return {"name": g.get("Name"), "currency": g.get("CurrencyCode"), "isin": g.get("ISIN"),
                 "ipo_date": _date(g.get("IPODate")), "sector": g.get("Sector"), "type": g.get("Type"),
                 "market_cap": _num(h.get("MarketCapitalization")),
@@ -817,8 +818,19 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
     for i in insts:
         if not with_profiles or i["role"] == "benchmark":
             continue
-        a = vt.profile(i["ticker"]) if getattr(vt, "available", False) else {}
-        b = eod.profile(i["ticker"]) if getattr(eod, "available", False) else {}
+        a = b = {}
+        for name, src in (("a", vt), ("b", eod)):  # ét papir med mærkelige data må aldrig vælte hele datatjekket
+            if not getattr(src, "available", False):
+                continue
+            try:
+                got = src.profile(i["ticker"]) or {}
+            except Exception as exc:  # noqa: BLE001
+                src.errors.append(f"Profil {i['ticker']}: {type(exc).__name__}")
+                got = {}
+            if name == "a":
+                a = got
+            else:
+                b = got
         profiles[i["ticker"]] = {"vt": a, "eodhd": b}
         if not a and not b:
             continue
