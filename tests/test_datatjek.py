@@ -180,7 +180,7 @@ def test_brief_and_cio_instruction():
     dc = run()
     b = dtj.agent_brief(dc)
     assert b.startswith("## Vibetrad datatjek 15/10/2026: PASS")
-    assert "| SpaceX (SPCX.US) |" in b and "(maks 10 %)" in b and "03/11/2026 efter lukning (3 kilder)" in b and "| Novo Nordisk A/S (NOVO-B.CO) |" in b
+    assert "| SpaceX (SPCX.US) |" in b and "(maks 10 %)" in b and "03/11/2026 efter lukning (3 kilder · estimat, kilderne enige)" in b and "| Novo Nordisk A/S (NOVO-B.CO) |" in b
     assert "USD/SEK" in b and "lock-up" in b and len(b) <= 5600
     assert "**Ugen i SEK inkl. valuta:**" in b and "**Resultat siden køb (kun aktier):**" in b
     assert "| Uge (lokal / SEK) |" in b and "**Indskud:**" not in b  # intet indskud oplyst i P
@@ -490,7 +490,7 @@ def test_tied_report_dates_pick_the_earliest_not_eodhd():
     assert s["status"] == "warn" and any("EODHD-kalenderen er et estimat for et nyligt noteret selskab" in n for n in s["notes"])
     assert dtj.alternative_reports(dc) == {"SPCX.US": ["2026-11-03"]}
     b = dtj.agent_brief(dc)
-    assert "| 20/10/2026 (1 kilde; anden kilde: 03/11/2026) |" in b  # "efter lukning" hører til EODHD's 03/11
+    assert "| 20/10/2026 (1 kilde · estimat; anden kilde: 03/11/2026) |" in b  # "efter lukning" hører til EODHD's 03/11
     # Planen: regnskabsteamet køres på 20/10 og ved, at datoen er usikker
     reps = rw.upcoming_reports(p, REF, lookup=None, verified=dtj.verified_reports(dc),
                                alternatives=dtj.alternative_reports(dc))
@@ -557,7 +557,8 @@ def test_confirmed_dates_win_ties_and_majority_still_wins():
                                           "earnings_confirmed": True}})
     p = rw.load_portfolio(json.dumps(dict(json.loads(RAW_P), next_reports_source={"SPCX.US": "eodhd"})))
     s = _spcx(dtj.run(p, WEEK, REF, vt=vt, eod=eod))
-    assert s["verified"] == "2026-11-05" and s["confirmed"] and any("bekræftet dato" in n for n in s["notes"])
+    assert s["verified"] == "2026-11-05" and not s["confirmed"] and s["certainty"] == "estimat"
+    assert any("Yahoo markerer datoen som fast" in n for n in s["notes"])
     # En dato skrevet ind i Vibetrad (fx fra selskabets IR-side) er også bekræftet
     p2 = rw.load_portfolio(json.dumps(dict(json.loads(RAW_P), next_reports={"SPCX.US": "2026-11-12"},
                                            next_reports_source={"SPCX.US": "manuel"})))
@@ -743,3 +744,20 @@ def test_vibe_trading_prices_use_yahoo_suffix_for_xetra(monkeypatch):
     assert seen["yfinance"] == ["VWCE.DE", "NOVO-B.CO"] and seen["auto"] == ["NVDA.US"]
     assert set(out) == {"VWCE.XETRA", "NOVO-B.CO", "NVDA.US"}
     assert out["VWCE.XETRA"]["rows"][-1] == ("2026-10-20", 11.0) and out["VWCE.XETRA"]["source"] == "yfinance"
+
+
+def test_yahoo_fixed_flag_is_not_company_confirmation_and_eodhd_wins_within_a_day():
+    """21/10/2026: Yahoo havde NVIDIA 17/11 som "ikke et estimat", EODHD 18/11, og NVIDIA havde intet meldt.
+    Datatjekket sagde "17/11 bekræftet", morgenbriefen "18/11 estimat". Nu: 18/11 (EODHD) og aldrig "bekræftet"."""
+    earn = {"SPCX.US": [{"date": "2026-11-03", "when": "AfterMarket"}], "GOOGL.US": [{"date": "2026-11-18", "when": None}],
+            "NOVO-B.CO": [{"date": "2026-11-04", "when": "BeforeMarket"}]}
+    vt, eod = sources(earn=earn, vt_prof={"GOOGL.US": {"earnings_dates": ["2026-11-17"], "earnings_estimate": False,
+                                                      "earnings_confirmed": True}})
+    p = rw.load_portfolio(json.dumps(dict(json.loads(RAW_P), next_reports={}, next_reports_source={})))
+    dc = dtj.run(p, WEEK, REF, vt=vt, eod=eod)
+    g = next(e for e in dc["earnings"] if e["ticker"] == "GOOGL.US")
+    assert g["verified"] == "2026-11-18" and not g["confirmed"] and g["near_dates"] == ["2026-11-17"]
+    assert g["certainty"] == "estimat" and g["agree"] == 2 and g["alternatives"] == []
+    brief = dtj.agent_brief(dc)
+    line = next(x for x in brief.splitlines() if "GOOGL.US" in x and "18/11/2026" in x)
+    assert "estimat" in line and "en kilde siger 17/11/2026" in line and "bekræftet" not in line

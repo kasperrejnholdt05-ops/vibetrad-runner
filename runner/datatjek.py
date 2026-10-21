@@ -987,17 +987,22 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
             for v in known.values():
                 counts[v] = counts.get(v, 0) + 1
             confirmed = set()
+            # Yahoos "ikke et estimat" er IKKE selskabets bekræftelse: 21/10/2026 stod NVIDIA 17/11 og Broadcom 09/12 som
+            # faste hos Yahoo, før selskaberne havde meldt noget (EODHD: 18/11 og 10/12). Flaget vejer ved uafgjort mellem
+            # to forskellige datoer (SpaceX 20/10 mod EODHD's 03/11), men vises aldrig som "bekræftet".
+            yahoo_fixed = set()
             if cand["Vibe-Trading"] and vt_prof.get("earnings_confirmed") and not vt_prof.get("earnings_estimate"):
-                confirmed.add(cand["Vibe-Trading"])
+                yahoo_fixed.add(cand["Vibe-Trading"])
             if cand["portefølje"] and psrc.get(code) == "manuel":  # skrevet ind i Vibetrad, typisk fra selskabets IR
                 confirmed.add(cand["portefølje"])
             if cand["nyhed"] and news_hit and news_hit["confirmed"]:  # selskabets egen meddelelse i nyhedsstrømmen
                 confirmed.add(cand["nyhed"])
             # En dateret nyhed fra de seneste 21 dage slår kalenderen ved uafgjort: nyheder afspejler selskabets
             # meddelelse, kalenderen er et estimat (for nye selskaber et skabelon-estimat). Vist som "nyhed", ikke bekræftet.
-            trusted = set(confirmed)
+            news_fresh = set(confirmed)
             if cand["nyhed"] and news_hit and news_hit["published"] >= (ref.date() - dt.timedelta(days=21)).isoformat():
-                trusted.add(cand["nyhed"])
+                news_fresh.add(cand["nyhed"])
+            trusted = news_fresh | yahoo_fixed
             # Flest kilder vinder. Ved uafgjort: en bekræftet dato, ellers den TIDLIGSTE (risiko først: hellere
             # forberedt for tidligt end overrasket). Før 19/10/2026 vandt EODHD ved uafgjort, og SpaceX fik
             # EODHD's estimat 03/11 i stedet for Yahoos 20/10, som var den rigtige dato.
@@ -1014,13 +1019,20 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
                                                 -(1 if new_listing and near(cand["EODHD"] or "0001-01-01", d) else 0),
                                                 -min(ordinal(x) for x in counts if near(x, d))))
             group = [d for d in counts if near(d, anchor)]
-            best = max(group, key=lambda d: (counts[d], d in confirmed, d in trusted, d == cand["EODHD"], -ordinal(d)))
+            # Inden for gruppen (højst én dags forskel): bekræftet > frisk nyhed > EODHD-kalenderen (samme dato som
+            # morgenopgaven og Handelstjek viser) > Yahoos faste dato > den tidligste
+            best = max(group, key=lambda d: (counts[d], d in confirmed, d in news_fresh, d == cand["EODHD"],
+                                             d in yahoo_fixed, -ordinal(d)))
             in_window = bool(window and window[0] <= best <= window[1])
             r["verified"] = best
             r["confirmed"] = best in confirmed
             r["agree"] = support(best) + (1 if in_window else 0)
             # Andre datoer, som en kilde giver: vises i facit, og en tidligere dato kan udløse regnskabsteamet
             r["alternatives"] = sorted({v for v in known.values() if not near(v, best)})
+            # Én dags forskel (fx EODHD 18/11, Yahoo 17/11) vises sammen med datoen, så alle sider siger det samme
+            r["near_dates"] = sorted({v for v in known.values() if near(v, best) and v != best})
+            r["certainty"] = ("bekræftet" if best in confirmed else "nyhed" if best in news_fresh
+                              else "enige" if counts[best] >= 2 and not r["near_dates"] else "estimat")
             off = [f"{k} {dmy(v)}" for k, v in known.items() if not near(v, best)]
             if window and not in_window:
                 off.append(f"Vibe-Trading {dmy(window[0])}–{dmy(window[1])}")
@@ -1029,7 +1041,8 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
                 runner_up = max((support(d) for d in counts if not near(d, best)), default=0)
                 why = ("flest kilder" if support(best) > runner_up else
                        "bekræftet dato" if best in confirmed else
-                       "nyhed fra de seneste 21 dage" if best in trusted else
+                       "nyhed fra de seneste 21 dage" if best in news_fresh else
+                       "Yahoo markerer datoen som fast (ikke bekræftet af selskabet)" if best in yahoo_fixed else
                        "EODHD-kalenderen er et estimat for et nyligt noteret selskab" if new_listing and not near(best, cand["EODHD"] or "0001-01-01") else
                        "uenighed: den tidligste dato er valgt")
                 r["notes"].append(f"datoer afviger: {', '.join(off)} (valgt {dmy(best)}: {why})")
@@ -1224,7 +1237,9 @@ def agent_brief(dc: dict | None, limit: int = 8000) -> str:
         when = ({"AfterMarket": " efter lukning", "BeforeMarket": " før åbning"}.get(e.get("eodhd_when") or "", "")
                 if e.get("eodhd") == e.get("verified") else "")
         alt = (f"; anden kilde: {', '.join(dmy(d) for d in e['alternatives'])}" if e.get("alternatives") else "")
-        rep = (dmy(e.get("verified")) + when + (f" ({e.get('agree')} {'kilde' if e.get('agree') == 1 else 'kilder'}{alt})"
+        cert = {"bekræftet": "bekræftet", "nyhed": "fra nyhed", "enige": "estimat, kilderne enige"}.get(e.get("certainty"), "estimat")
+        nearx = f", en kilde siger {', '.join(dmy(d) for d in e['near_dates'])}" if e.get("near_dates") else ""
+        rep = (dmy(e.get("verified")) + when + (f" ({e.get('agree')} {'kilde' if e.get('agree') == 1 else 'kilder'} · {cert}{nearx}{alt})"
                                                 if e.get("agree") else "")) if e.get("verified") else "–"
         w = (f"{_nf(pr.get('weight_pct'), 1)} %" + (f" ({lim} {pr['max_weight']:g} %)" if pr.get("over_max") else "")) if pr.get("weight_pct") is not None else "–"
         wk = _sp(src.get("week_pct")) + (f" / {_sp(pr['week_pct_sek'])}" if pr.get("week_pct_sek") is not None else "")
