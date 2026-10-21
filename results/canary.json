@@ -1,0 +1,80 @@
+{
+ "schema": 1,
+ "generated_at": "2026-10-21T12:33:21+02:00",
+ "run_id": "2026-W43_20261021-1233_39585203459",
+ "week_id": "2026-W43",
+ "status": "ok",
+ "ok": 9,
+ "warn": 0,
+ "fail": 0,
+ "duration_s": 39,
+ "checks": [
+  {
+   "id": "secrets",
+   "label": "Secrets",
+   "ok": true,
+   "note": "VT_RESULTS_PASSPHRASE og VT_PORTFOLIO kunne læses"
+  },
+  {
+   "id": "anthropic",
+   "label": "Anthropic-nøgle og model",
+   "ok": true,
+   "note": "nøglen virker, modellen claude-sonnet-5 findes (8 tokens talt – gratis kald)"
+  },
+  {
+   "id": "vibe_trading",
+   "label": "Vibe-Trading installeret",
+   "ok": true,
+   "note": "vibe-trading-ai 0.1.16 installeret og importeret"
+  },
+  {
+   "id": "eodhd",
+   "label": "EODHD-nøgle",
+   "ok": true,
+   "note": "nøglen virker (187 kald)"
+  },
+  {
+   "id": "datatjek",
+   "label": "Datatjek",
+   "ok": true,
+   "note": "PASS · 31 ok, 0 advarsler, 0 fejl"
+  },
+  {
+   "id": "regnskab",
+   "label": "Regnskabsdatoer",
+   "ok": true,
+   "note": "fundet for alle aktier"
+  },
+  {
+   "id": "fred",
+   "label": "FRED",
+   "ok": true,
+   "note": "FRED: ja, nøglen virker (7 af 7 serier, 9 kald · US 10-årig statsrente 5,15 % pr. 19/10/2026 · Buffett-indikator 255 % (Q2 2026))"
+  },
+  {
+   "id": "makro",
+   "label": "Makro EU/Norden (EODHD)",
+   "ok": true,
+   "note": "Makro EU/Norden: ja (Riksbanken 1,75 % → 04/11/2026 · ECB 2,65 % → 29/10/2026 · Sverige 10 år 3,19 %)"
+  },
+  {
+   "id": "runtime",
+   "label": "Runner-opstart",
+   "ok": true,
+   "note": "plan lagt og tørkørsels-motor startet"
+  }
+ ],
+ "github_run_id": "39585203459",
+ "stale_after_hours": 30,
+ "history": [
+  {
+   "run_id": "2026-W43_20261021-1233_39585203459",
+   "generated_at": "2026-10-21T12:33:21+02:00",
+   "status": "ok",
+   "ok": 9,
+   "warn": 0,
+   "fail": 0,
+   "duration_s": 39
+  }
+ ]
+}
