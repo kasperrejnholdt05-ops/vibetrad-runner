@@ -117,6 +117,9 @@ def grade(value: float | None, ok: float, warn: float) -> str:
     return "ok" if value <= ok else "warn" if value <= warn else "fail"
 
 
+RECENT_REPORT_DAYS = 75  # et regnskab inden for så mange dage forklarer, at der endnu ingen ny dato er
+
+
 def worst(states: Iterable[str]) -> str:
     order = {"ok": 0, "info": 0, "warn": 1, "fail": 2}
     w = "ok"
@@ -914,7 +917,8 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
     pdates = portfolio_dates(p, ref.date())
     psrc = {norm_ticker(k): v for k, v in (p.get("next_reports_source") or {}).items()}
     stock_codes = [i["ticker"] for i in insts if i["kind"] not in ("etf", "fund") and i["role"] != "benchmark"]
-    cal = (eod.earnings(stock_codes, (ref.date() - dt.timedelta(days=3)).isoformat(),
+    # 75 dage tilbage: så ved vi, om et papir lige har aflagt regnskab (og derfor endnu ikke har en ny dato)
+    cal = (eod.earnings(stock_codes, (ref.date() - dt.timedelta(days=RECENT_REPORT_DAYS)).isoformat(),
                         (ref.date() + dt.timedelta(days=horizon_days)).isoformat())
            if getattr(eod, "available", False) else {})
     earnings = []
@@ -922,6 +926,7 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
         name = next(i["name"] for i in insts if i["ticker"] == code)
         e_rows = [x for x in cal.get(code, []) if x["date"] >= ref_day]
         e_next = e_rows[0] if e_rows else None
+        e_past = [x["date"] for x in cal.get(code, []) if x["date"] < ref_day]
         # Selskabets egen meddelelse i nyhedsstrømmen ("… to Post Third Quarter Results … on October 20")
         news_hit = None
         news_scanned: int | None = None
@@ -937,8 +942,10 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
                 news_hit, news_error = None, type(exc).__name__
         vt_prof = (profiles.get(code, {}).get("vt", {}) or {})
         vt_all = sorted(d for d in vt_prof.get("earnings_dates", []) if d)
+        vt_last = None
         if vt_all and vt_all[-1] < ref_day:  # kun datoer for et overstået regnskab
-            vt_all = []
+            vt_last, vt_all = vt_all[-1], []
+        last_report = max([d for d in (e_past[-1] if e_past else None, vt_last) if d], default=None)
         # Yahoo giver et vindue [fra, til], når datoen ikke er bekræftet: det tæller som enigt, hvis datoen ligger i det
         window = (vt_all[0], vt_all[-1]) if len(vt_all) >= 2 and vt_all[-1] > vt_all[0] else None
         p_date = pdates.get(code) if (pdates.get(code) or "") >= ref_day else None
@@ -976,8 +983,15 @@ def run(p: dict, week: dict, ref: dt.datetime, *, vt: Any = None, eod: Any = Non
         def near(d: str, best: str) -> bool:
             return abs((dt.date.fromisoformat(d) - dt.date.fromisoformat(best)).days) <= 1
 
-        if not known and not window:
-            r.update(status="warn", verified=None)
+        if not known and not window and last_report and (
+                dt.date.fromisoformat(ref_day) - dt.date.fromisoformat(last_report)).days <= RECENT_REPORT_DAYS:
+            # 22/10/2026: IBM, Nike og Tesla havde lige aflagt regnskab, og ingen kilde havde den næste dato endnu.
+            # Det er normalt – ikke en advarsel (kanariefuglen blev gul af det).
+            r.update(status="info", verified=None, last_report=last_report)
+            r["notes"].append(f"seneste regnskab {dmy(last_report)}; næste dato er ikke offentliggjort endnu "
+                              f"(kommer typisk ca. 3 måneder efter)")
+        elif not known and not window:
+            r.update(status="warn", verified=None, last_report=last_report)
             r["notes"].append("ingen kommende regnskabsdato i nogen kilde")
         elif not known:  # vinduets start kan ligge før i dag: næste regnskab er tidligst i dag
             r.update(status="info", verified=max(window[0], ref_day), agree=1)
@@ -1240,7 +1254,8 @@ def agent_brief(dc: dict | None, limit: int = 8000) -> str:
         cert = {"bekræftet": "bekræftet", "nyhed": "fra nyhed", "enige": "estimat, kilderne enige"}.get(e.get("certainty"), "estimat")
         nearx = f", en kilde siger {', '.join(dmy(d) for d in e['near_dates'])}" if e.get("near_dates") else ""
         rep = (dmy(e.get("verified")) + when + (f" ({e.get('agree')} {'kilde' if e.get('agree') == 1 else 'kilder'} · {cert}{nearx}{alt})"
-                                                if e.get("agree") else "")) if e.get("verified") else "–"
+                                                if e.get("agree") else "")) if e.get("verified") else (
+            f"– (seneste {dmy(e['last_report'])}, ny dato ikke meldt endnu)" if e.get("last_report") else "–")
         w = (f"{_nf(pr.get('weight_pct'), 1)} %" + (f" ({lim} {pr['max_weight']:g} %)" if pr.get("over_max") else "")) if pr.get("weight_pct") is not None else "–"
         wk = _sp(src.get("week_pct")) + (f" / {_sp(pr['week_pct_sek'])}" if pr.get("week_pct_sek") is not None else "")
         lines.append(f"| {r['name']} ({r['ticker']}) | {_nf(src.get('close'))} {eo.currency_of(r['ticker']) or ''} "

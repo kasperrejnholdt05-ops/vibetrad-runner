@@ -761,3 +761,32 @@ def test_yahoo_fixed_flag_is_not_company_confirmation_and_eodhd_wins_within_a_da
     brief = dtj.agent_brief(dc)
     line = next(x for x in brief.splitlines() if "GOOGL.US" in x and "18/11/2026" in x)
     assert "estimat" in line and "en kilde siger 17/11/2026" in line and "bekræftet" not in line
+
+
+def test_just_reported_without_next_date_is_info_not_warning():
+    """22/10/2026: kanariefuglen blev gul, fordi IBM, Nike og Tesla lige havde aflagt regnskab og ingen kilde
+    havde den næste dato endnu. Det er normalt. Uden et nyligt regnskab er det stadig en advarsel."""
+    earn = {"SPCX.US": [{"date": "2026-11-03", "when": "AfterMarket"}],
+            "GOOGL.US": [{"date": "2026-09-30", "when": "AfterMarket"}],   # 15 dage siden, ingen ny dato
+            "NOVO-B.CO": [{"date": "2026-11-04", "when": "BeforeMarket"}]}
+    vt, eod = sources(earn=earn, vt_prof={"GOOGL.US": {"earnings_dates": ["2026-09-30"]}})
+    p = rw.load_portfolio(json.dumps(dict(json.loads(RAW_P), next_reports={}, next_reports_source={})))
+    dc = dtj.run(p, WEEK, REF, vt=vt, eod=eod)
+    g = next(e for e in dc["earnings"] if e["ticker"] == "GOOGL.US")
+    assert g["status"] == "info" and g["last_report"] == "2026-09-30" and g["verified"] is None
+    assert "seneste regnskab 30/09/2026" in g["notes"][-1]
+    assert not any("GOOGL.US" in i for i in dc["issues"])
+    row = next(x for x in dtj.agent_brief(dc).splitlines() if x.startswith("| Alphabet A (GOOGL.US)"))
+    assert row.endswith("| – (seneste 30/09/2026, ny dato ikke meldt endnu) |")
+    # kun Yahoo kender det seneste regnskab → også info
+    vt2, eod2 = sources(earn={k: v for k, v in earn.items() if k != "GOOGL.US"},
+                        vt_prof={"GOOGL.US": {"earnings_dates": ["2026-10-01"]}})
+    g2 = next(e for e in dtj.run(p, WEEK, REF, vt=vt2, eod=eod2)["earnings"] if e["ticker"] == "GOOGL.US")
+    assert g2["status"] == "info" and g2["last_report"] == "2026-10-01"
+    # seneste regnskab for 100 dage siden og ingen ny dato → advarsel som før
+    vt3, eod3 = sources(earn=dict(earn, **{"GOOGL.US": [{"date": "2026-07-07", "when": None}]}),
+                        vt_prof={"GOOGL.US": {"earnings_dates": []}})
+    dc3 = dtj.run(p, WEEK, REF, vt=vt3, eod=eod3)
+    g3 = next(e for e in dc3["earnings"] if e["ticker"] == "GOOGL.US")
+    assert g3["status"] == "warn" and "ingen kommende regnskabsdato" in g3["notes"][-1]
+    assert any("regnskab GOOGL.US" in i for i in dc3["issues"])
