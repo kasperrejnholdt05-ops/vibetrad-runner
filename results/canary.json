@@ -1,13 +1,13 @@
 {
  "schema": 1,
- "generated_at": "2026-10-22T10:50:46+02:00",
- "run_id": "2026-W43_20261022-1050_39750610280",
+ "generated_at": "2026-10-22T13:08:14+02:00",
+ "run_id": "2026-W43_20261022-1308_39768109533",
  "week_id": "2026-W43",
  "status": "warn",
  "ok": 8,
  "warn": 1,
  "fail": 0,
- "duration_s": 38,
+ "duration_s": 29,
  "checks": [
   {
    "id": "secrets",
@@ -37,7 +37,7 @@
    "id": "datatjek",
    "label": "Datatjek",
    "ok": null,
-   "note": "ADVARSEL · 27 ok, 4 advarsler, 0 fejl"
+   "note": "ADVARSEL · 29 ok, 2 advarsler, 0 fejl"
   },
   {
    "id": "regnskab",
@@ -64,7 +64,7 @@
    "note": "plan lagt og tørkørsels-motor startet"
   }
  ],
- "github_run_id": "39750610280",
+ "github_run_id": "39768109533",
  "stale_after_hours": 30,
  "history": [
   {
@@ -84,6 +84,15 @@
    "warn": 1,
    "fail": 0,
    "duration_s": 38
+  },
+  {
+   "run_id": "2026-W43_20261022-1308_39768109533",
+   "generated_at": "2026-10-22T13:08:14+02:00",
+   "status": "warn",
+   "ok": 8,
+   "warn": 1,
+   "fail": 0,
+   "duration_s": 29
   }
  ]
 }
