@@ -9,17 +9,22 @@ name: Vibetrad ugekørsel
 # run_week.py springer over, hvis klokken i Stockholm er før 08:00, eller ugen
 # allerede er kørt. 09:30 UTC er et sikkerhedsnet, hvis GitHub var forsinket
 # eller den første kørsel fejlede.
-# Kanariefuglen: hver nat kl. 03:30 UTC (05:30 sommertid / 04:30 vintertid) kører den samme
+# Kanariefuglen: hver nat kl. 02:17 UTC (04:17 sommertid / 03:17 vintertid) kører den samme
 # kæde som en gratis tørkørsel (runner/kanarie.py): secrets, Anthropic-nøgle og model, Vibe-Trading-
 # installation, EODHD, datatjek, regnskabsdatoer, FRED, makro, kryptering og push. Den skriver kun
 # results/canary.json + results/canary/latest.enc.json – aldrig ugerapporterne. Fejler et tjek,
 # bliver kørslen rød, og GitHub sender den sædvanlige fejlmail. Kører uanset VT_SCHEDULE.
+# GitHub-cron er upålidelig (21/10/2026 kom nattens kørsel 5 timer for sent, 22/10 slet ikke), så der fyres også
+# 03:30 og 04:41 UTC. Alle cron-linjer, der ender på " * * *", er kanariefugle. run_week.py springer en ekstra fyring
+# over på få sekunder, når nattens kanariefugl allerede er grøn eller gul; en rød prøves igen.
 on:
   schedule:
     - cron: "0 6 * * 6"
     - cron: "0 7 * * 6"
     - cron: "30 9 * * 6"
+    - cron: "17 2 * * *"
     - cron: "30 3 * * *"
+    - cron: "41 4 * * *"
   workflow_dispatch:
     inputs:
       plan:
@@ -55,7 +60,7 @@ permissions:
 # sammen med den (GitHub holder kun én ventende kørsel pr. kø). Push-trinnet fletter results/, så to samtidige
 # kørsler aldrig overskriver hinanden.
 concurrency:
-  group: ${{ (inputs.canary || github.event.schedule == '30 3 * * *') && 'vibetrad-canary' || 'vibetrad-weekly' }}
+  group: ${{ (inputs.canary || (github.event_name == 'schedule' && endsWith(github.event.schedule, ' * * *'))) && 'vibetrad-canary' || 'vibetrad-weekly' }}
   cancel-in-progress: false
 
 jobs:
@@ -85,8 +90,8 @@ jobs:
       VT_PRICE_IN_PER_MTOK: ${{ vars.VT_PRICE_IN_PER_MTOK || '2' }}
       VT_PRICE_OUT_PER_MTOK: ${{ vars.VT_PRICE_OUT_PER_MTOK || '10' }}
       VT_MONTHLY_SLOT: ${{ inputs.monthly_slot || '' }}
-      VT_CANARY: ${{ (inputs.canary || github.event.schedule == '30 3 * * *') && 'true' || 'false' }}
-      VT_DRY_RUN: ${{ (inputs.dry_run || inputs.canary || github.event.schedule == '30 3 * * *') && 'true' || 'false' }}
+      VT_CANARY: ${{ (inputs.canary || (github.event_name == 'schedule' && endsWith(github.event.schedule, ' * * *'))) && 'true' || 'false' }}
+      VT_DRY_RUN: ${{ (inputs.dry_run || inputs.canary || (github.event_name == 'schedule' && endsWith(github.event.schedule, ' * * *'))) && 'true' || 'false' }}
       VT_DATATJEK: ${{ vars.VT_DATATJEK || 'on' }}
       # Vibe-Tradings web_search må ikke falde tilbage på kinesiske søgemaskiner.
       VIBE_TRADING_SEARCH_BING_FALLBACK: "0"

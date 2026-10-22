@@ -541,9 +541,20 @@ def week_window(ref: dt.datetime) -> dict:
             "full": full, "label": label}
 
 
-def should_run(ref: dt.datetime, latest_meta: dict | None, event: str, force: bool, canary: bool = False) -> tuple[bool, str]:
+def should_run(ref: dt.datetime, latest_meta: dict | None, event: str, force: bool, canary: bool = False,
+               canary_meta: dict | None = None) -> tuple[bool, str]:
     week = week_window(ref)
-    if canary:  # den daglige tørkørsel kører altid, uanset ugedag og VT_SCHEDULE; den rører ikke ugerapporterne
+    if canary:  # den daglige tørkørsel kører uanset ugedag og VT_SCHEDULE; den rører ikke ugerapporterne
+        # GitHub-cron er upålidelig (22/10/2026 kom nattens kørsel slet ikke), så der fyres flere gange hver nat.
+        # Den første, der når frem, kører; de næste springer over på ~10 s, når nattens kanariefugl allerede er grøn/gul.
+        # En rød kanariefugl prøves igen ved næste fyring. Manuel kørsel (knaptryk) kører altid.
+        if event == "schedule" and not force and canary_meta:
+            try:
+                last = dt.datetime.fromisoformat(str(canary_meta.get("generated_at"))).astimezone(STO)
+            except Exception:  # noqa: BLE001
+                last = None
+            if last and last.date() == ref.date() and canary_meta.get("status") in ("ok", "warn"):
+                return False, f"nattens kanariefugl har allerede kørt ({last:%H:%M}, {canary_meta.get('status')})"
         return True, "kanariefugl (daglig gratis tørkørsel af hele kæden)"
     if force or event == "workflow_dispatch":
         return True, "manuel kørsel"
@@ -2251,7 +2262,14 @@ def main(argv: list[str] | None = None) -> int:
     ref = now_sto(args.now)
     week = week_window(ref)
 
-    ok, why = should_run(ref, read_latest_meta(results), args.event, args.force, canary=args.canary)
+    canary_meta = None
+    if args.canary:
+        try:
+            canary_meta = json.loads((results / "canary.json").read_text("utf-8"))
+        except Exception:  # noqa: BLE001
+            canary_meta = None
+    ok, why = should_run(ref, read_latest_meta(results), args.event, args.force, canary=args.canary,
+                         canary_meta=canary_meta)
     con.say(f"Stockholm {ref:%d/%m/%Y %H:%M} · {week['label']} · {'KØRER' if ok else 'springer over'}: {why}")
     if not ok or args.gate_only:
         set_output(ran="true" if ok else "false", status="gate" if ok else "skipped", week=week["id"])

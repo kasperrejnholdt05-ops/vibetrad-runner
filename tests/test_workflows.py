@@ -97,6 +97,15 @@ def test_canary_has_its_own_queue_and_paid_runs_never_cancel_each_other():
     assert c["cancel-in-progress"] is False
     g = c["group"]
     assert "'vibetrad-canary'" in g and "'vibetrad-weekly'" in g
-    assert "inputs.canary" in g and "github.event.schedule == '30 3 * * *'" in g
+    expr = "(github.event_name == 'schedule' && endsWith(github.event.schedule, ' * * *'))"
+    assert "inputs.canary" in g and expr in g
     on = wf.get("on", wf.get(True))
-    assert {"cron": "30 3 * * *"} in on["schedule"]
+    crons = [c["cron"] for c in on["schedule"]]
+    nightly = [c for c in crons if c.endswith(" * * *")]
+    weekly = [c for c in crons if not c.endswith(" * * *")]
+    # flere natlige fyringer (GitHub dropper cron), alle før sync-opgaven kl. 07:40 svensk tid (05:40 UTC sommertid)
+    assert len(nightly) >= 3 and all(int(c.split()[1]) * 60 + int(c.split()[0]) < 5 * 60 + 40 for c in nightly)
+    # lørdagskørslerne må aldrig blive til kanariefugle
+    assert weekly and all(c.endswith(" * * 6") for c in weekly)
+    env = wf["jobs"][next(iter(wf["jobs"]))]["env"]
+    assert expr in env["VT_CANARY"] and expr in env["VT_DRY_RUN"]

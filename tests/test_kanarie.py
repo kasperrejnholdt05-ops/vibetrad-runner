@@ -116,6 +116,41 @@ def test_should_run_canary_ignores_weekday_schedule_and_previous_runs(monkeypatc
     assert rw.should_run(ref, meta, "schedule", False)[0] is False
 
 
+def test_extra_nightly_canary_fires_skip_when_tonight_is_already_green(monkeypatch):
+    """22/10/2026 kom nattens kanariefugl aldrig: der fyres nu flere gange, men kun den første kører."""
+    ref = rw.now_sto("2026-10-22T05:30")
+    green = {"generated_at": "2026-10-22T04:19:00+02:00", "status": "ok"}
+    ok, why = rw.should_run(ref, None, "schedule", False, canary=True, canary_meta=green)
+    assert not ok and "04:19" in why
+    assert rw.should_run(ref, None, "schedule", False, canary=True, canary_meta={**green, "status": "warn"})[0] is False
+    # rød i nat → prøv igen; gårsdagens → kør; UTC-tid lige før midnat svensk tid tæller som i går
+    assert rw.should_run(ref, None, "schedule", False, canary=True, canary_meta={**green, "status": "fail"})[0] is True
+    assert rw.should_run(ref, None, "schedule", False, canary=True,
+                         canary_meta={"generated_at": "2026-10-21T21:59:00+00:00", "status": "ok"})[0] is True
+    assert rw.should_run(ref, None, "schedule", False, canary=True,
+                         canary_meta={"generated_at": "2026-10-21T22:01:00+00:00", "status": "ok"})[0] is False
+    # knaptryk kører altid; ødelagt eller manglende statusfil → kør
+    assert rw.should_run(ref, None, "workflow_dispatch", False, canary=True, canary_meta=green)[0] is True
+    assert rw.should_run(ref, None, "schedule", True, canary=True, canary_meta=green)[0] is True
+    assert rw.should_run(ref, None, "schedule", False, canary=True, canary_meta={"generated_at": "x"})[0] is True
+    assert rw.should_run(ref, None, "schedule", False, canary=True, canary_meta=None)[0] is True
+
+
+def test_canary_gate_reads_results_canary_json(tmp_path, monkeypatch, capsys):
+    import json as _j
+    res = tmp_path / "results"
+    res.mkdir()
+    (res / "canary.json").write_text(_j.dumps({"generated_at": "2026-10-22T04:19:00+02:00", "status": "ok"}))
+    out = tmp_path / "out.txt"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+    monkeypatch.setenv("VT_CANARY", "true")
+    assert rw.main(["--results", str(res), "--event", "schedule", "--gate-only", "--now", "2026-10-22T06:41"]) == 0
+    assert "ran=false" in out.read_text()
+    out.write_text("")
+    assert rw.main(["--results", str(res), "--event", "schedule", "--gate-only", "--now", "2026-10-23T04:17"]) == 0
+    assert "ran=true" in out.read_text()
+
+
 def test_canary_run_end_to_end(tmp_path):
     import http.server
     import threading
