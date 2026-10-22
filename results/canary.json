@@ -1,13 +1,13 @@
 {
  "schema": 1,
- "generated_at": "2026-10-21T12:33:21+02:00",
- "run_id": "2026-W43_20261021-1233_39585203459",
+ "generated_at": "2026-10-22T10:50:46+02:00",
+ "run_id": "2026-W43_20261022-1050_39750610280",
  "week_id": "2026-W43",
- "status": "ok",
- "ok": 9,
- "warn": 0,
+ "status": "warn",
+ "ok": 8,
+ "warn": 1,
  "fail": 0,
- "duration_s": 39,
+ "duration_s": 38,
  "checks": [
   {
    "id": "secrets",
@@ -36,8 +36,8 @@
   {
    "id": "datatjek",
    "label": "Datatjek",
-   "ok": true,
-   "note": "PASS · 31 ok, 0 advarsler, 0 fejl"
+   "ok": null,
+   "note": "ADVARSEL · 27 ok, 4 advarsler, 0 fejl"
   },
   {
    "id": "regnskab",
@@ -49,13 +49,13 @@
    "id": "fred",
    "label": "FRED",
    "ok": true,
-   "note": "FRED: ja, nøglen virker (7 af 7 serier, 9 kald · US 10-årig statsrente 5,15 % pr. 19/10/2026 · Buffett-indikator 255 % (Q2 2026))"
+   "note": "FRED: ja, nøglen virker (7 af 7 serier, 9 kald · US 10-årig statsrente 5,12 % pr. 20/10/2026 · Buffett-indikator 255 % (Q2 2026))"
   },
   {
    "id": "makro",
    "label": "Makro EU/Norden (EODHD)",
    "ok": true,
-   "note": "Makro EU/Norden: ja (Riksbanken 1,75 % → 04/11/2026 · ECB 2,65 % → 29/10/2026 · Sverige 10 år 3,19 %)"
+   "note": "Makro EU/Norden: ja (Riksbanken 1,75 % → 04/11/2026 · ECB 2,65 % → 29/10/2026 · Sverige 10 år 3,16 %)"
   },
   {
    "id": "runtime",
@@ -64,7 +64,7 @@
    "note": "plan lagt og tørkørsels-motor startet"
   }
  ],
- "github_run_id": "39585203459",
+ "github_run_id": "39750610280",
  "stale_after_hours": 30,
  "history": [
   {
@@ -75,6 +75,15 @@
    "warn": 0,
    "fail": 0,
    "duration_s": 39
+  },
+  {
+   "run_id": "2026-W43_20261022-1050_39750610280",
+   "generated_at": "2026-10-22T10:50:46+02:00",
+   "status": "warn",
+   "ok": 8,
+   "warn": 1,
+   "fail": 0,
+   "duration_s": 38
   }
  ]
 }
