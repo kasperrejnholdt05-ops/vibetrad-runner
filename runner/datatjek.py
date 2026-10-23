@@ -148,6 +148,16 @@ def week_return(rows: list[tuple[str, float]], week_from: str, week_to: str) -> 
     return (inside[-1] / before[-1] - 1) * 100
 
 
+def _weekdays_between(a: str, b: str) -> int:
+    """Antal hverdage efter den tidligste og til og med den seneste dato (fredag→mandag = 1)."""
+    d1, d2 = sorted((dt.date.fromisoformat(a), dt.date.fromisoformat(b)))
+    n, d = 0, d1
+    while d < d2:
+        d += dt.timedelta(days=1)
+        n += d.weekday() < 5
+    return n
+
+
 def last_on_or_before(rows: list[tuple[str, float]], day: str) -> tuple[str, float] | None:
     hit = [(d, c) for d, c in rows if d <= day]
     return hit[-1] if hit else None
@@ -591,12 +601,20 @@ def _compare_series(vt: dict | None, eod: dict | None, week: dict, ref_day: str,
             row["status"] = worst([row["status"], g])
             if row["vt"]["date"] != row["eodhd"]["date"]:
                 gap = abs((dt.date.fromisoformat(row["vt"]["date"]) - dt.date.fromisoformat(row["eodhd"]["date"])).days)
-                if fx and gap <= 1:  # valuta handles døgnet rundt; kilderne lukker dagen på forskellige tidspunkter
+                lag_ok = gap <= 1 if fx else (gap <= 3 and _weekdays_between(row["vt"]["date"], row["eodhd"]["date"]) <= 1)
+                if lag_ok:
+                    # valuta handles døgnet rundt; aktier: én kilde har endnu ikke gårsdagens lukkekurs (Yahoo er ofte
+                    # en dag bagud med europæiske papirer om morgenen – kanariefuglen 23/10/2026 blev rød af det).
+                    # Sammenligningen sker på den seneste fælles dag (ovenfor) og ugeafkastet til samme dag (nedenfor).
                     row["info"] = f"seneste dag: Vibe-Trading {dmy(row['vt']['date'])}, EODHD {dmy(row['eodhd']['date'])}"
                 else:
                     row["status"] = worst([row["status"], "warn"])
                     row["notes"].append(f"seneste dag: Vibe-Trading {dmy(row['vt']['date'])}, EODHD {dmy(row['eodhd']['date'])}")
         wa, wb = row["vt"]["week_pct"], row["eodhd"]["week_pct"]
+        if common and not fx and row["vt"]["date"] != row["eodhd"]["date"]:
+            end = min(common[-1], week["to"])  # ugeafkast til samme dag i begge kilder
+            wa, wb = week_return(vt["rows"], week["from"], end), week_return(eod["rows"], week["from"], end)
+            row["week_to_common"] = end
         if wa is not None and wb is not None and not fx:  # valuta: ugeafkast afhænger af lukketidspunkt, kurs tjekkes ovenfor
             row["week_diff_pp"] = round(abs(wa - wb), 3)
             g = grade(row["week_diff_pp"], WEEK_OK, WEEK_WARN)

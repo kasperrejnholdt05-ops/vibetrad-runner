@@ -790,3 +790,22 @@ def test_just_reported_without_next_date_is_info_not_warning():
     g3 = next(e for e in dc3["earnings"] if e["ticker"] == "GOOGL.US")
     assert g3["status"] == "warn" and "ingen kommende regnskabsdato" in g3["notes"][-1]
     assert any("regnskab GOOGL.US" in i for i in dc3["issues"])
+
+
+def test_one_source_a_day_behind_is_info_and_week_compared_to_common_day():
+    """23/10/2026: Yahoo havde VWCE/EXSA/INVE/NOVO til 21/10, EODHD til 22/10. Ugeafkastet blev regnet til hver sin
+    dag, INVE afveg 2,3 pp, og kanariefuglen blev rød. Nu: én dags efterslæb er info, og ugen regnes til samme dag."""
+    week = {"from": "2026-10-19", "to": "2026-10-22"}
+    vt = {"rows": [("2026-10-16", 100.0), ("2026-10-19", 101.0), ("2026-10-20", 102.0), ("2026-10-21", 103.0)],
+          "source": "Yahoo", "currency": "SEK"}
+    eod = {"rows": [("2026-10-16", 100.0), ("2026-10-19", 101.0), ("2026-10-20", 102.0), ("2026-10-21", 103.0),
+                    ("2026-10-22", 106.0)], "source": "EODHD", "currency": "SEK"}
+    row = dtj._compare_series(vt, eod, week, "2026-10-23", 0.5, 2.0, cut="2026-10-22")
+    assert row["status"] == "ok" and row["week_diff_pp"] == 0 and row["week_to_common"] == "2026-10-21"
+    assert "seneste dag" in row["info"] and not row["notes"]
+    # tre hverdage bagud er stadig en advarsel
+    vt_old = {**vt, "rows": vt["rows"][:2]}
+    row2 = dtj._compare_series(vt_old, eod, week, "2026-10-23", 0.5, 2.0, cut="2026-10-22")
+    assert row2["status"] in ("warn", "fail") and any("seneste dag" in n for n in row2["notes"])
+    # fredag → mandag tæller som én dag
+    assert dtj._weekdays_between("2026-10-16", "2026-10-19") == 1
