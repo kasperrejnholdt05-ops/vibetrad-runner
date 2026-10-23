@@ -103,8 +103,11 @@ def test_canary_has_its_own_queue_and_paid_runs_never_cancel_each_other():
     crons = [c["cron"] for c in on["schedule"]]
     nightly = [c for c in crons if c.endswith(" * * *")]
     weekly = [c for c in crons if not c.endswith(" * * *")]
-    # flere natlige fyringer (GitHub dropper cron), alle før sync-opgaven kl. 07:40 svensk tid (05:40 UTC sommertid)
-    assert len(nightly) >= 3 and all(int(c.split()[1]) * 60 + int(c.split()[0]) < 5 * 60 + 40 for c in nightly)
+    # flere natlige fyringer (GitHub dropper cron) før sync-opgaven kl. 07:40 svensk tid (05:40 UTC sommertid),
+    # og én om eftermiddagen efter åbningen i New York (makrovagten), før sync kl. 19:40 (17:40 UTC)
+    night = [c for c in nightly if int(c.split()[1]) * 60 + int(c.split()[0]) < 5 * 60 + 40]
+    later = [c for c in nightly if c not in night]
+    assert len(night) >= 3 and later == ["47 14 * * *"]
     # lørdagskørslerne må aldrig blive til kanariefugle
     assert weekly and all(c.endswith(" * * 6") for c in weekly)
     env = wf["jobs"][next(iter(wf["jobs"]))]["env"]

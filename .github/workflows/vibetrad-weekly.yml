@@ -16,7 +16,8 @@ name: Vibetrad ugekørsel
 # bliver kørslen rød, og GitHub sender den sædvanlige fejlmail. Kører uanset VT_SCHEDULE.
 # GitHub-cron er upålidelig (21/10/2026 kom nattens kørsel 5 timer for sent, 22/10 slet ikke), så der fyres også
 # 03:30 og 04:41 UTC. Alle cron-linjer, der ender på " * * *", er kanariefugle. run_week.py springer en ekstra fyring
-# over på få sekunder, når nattens kanariefugl allerede er grøn eller gul; en rød prøves igen.
+# over på få sekunder, når kanariefuglen har kørt inden for 8 timer (grøn eller gul); en rød prøves igen.
+# 14:47 UTC (16:47 sommertid, efter åbningen i New York) kører makrovagten igen, så stress i USA ses samme dag.
 on:
   schedule:
     - cron: "0 6 * * 6"
@@ -25,6 +26,7 @@ on:
     - cron: "17 2 * * *"
     - cron: "30 3 * * *"
     - cron: "41 4 * * *"
+    - cron: "47 14 * * *"
   workflow_dispatch:
     inputs:
       plan:

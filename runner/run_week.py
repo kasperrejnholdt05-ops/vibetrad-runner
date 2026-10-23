@@ -48,6 +48,7 @@ import eodhd as eo  # noqa: E402  (EODHD-klient og -integration i Vibe-Trading)
 import fred as fr  # noqa: E402  (FRED: nøgletjek og makro-facit)
 import kanarie as kn  # noqa: E402  (kanariefugl: daglig gratis tørkørsel af hele kæden)
 import makro as mk  # noqa: E402  (EODHD: centralbanker og statsrenter for Europa og Norden)
+import makrovagt as mv  # noqa: E402  (makrovagt: stress, chok og sorte svaner – kun markedsdata)
 
 STO = ZoneInfo("Europe/Stockholm")
 SCHEMA = 1
@@ -541,6 +542,9 @@ def week_window(ref: dt.datetime) -> dict:
             "full": full, "label": label}
 
 
+CANARY_MIN_GAP_H = 8  # nat (02:17, 03:30, 04:41 UTC) giver én kørsel; eftermiddagen (14:47 UTC) en til – makrovagten to gange i døgnet
+
+
 def should_run(ref: dt.datetime, latest_meta: dict | None, event: str, force: bool, canary: bool = False,
                canary_meta: dict | None = None) -> tuple[bool, str]:
     week = week_window(ref)
@@ -553,8 +557,8 @@ def should_run(ref: dt.datetime, latest_meta: dict | None, event: str, force: bo
                 last = dt.datetime.fromisoformat(str(canary_meta.get("generated_at"))).astimezone(STO)
             except Exception:  # noqa: BLE001
                 last = None
-            if last and last.date() == ref.date() and canary_meta.get("status") in ("ok", "warn"):
-                return False, f"nattens kanariefugl har allerede kørt ({last:%H:%M}, {canary_meta.get('status')})"
+            if last and (ref - last) < dt.timedelta(hours=CANARY_MIN_GAP_H) and canary_meta.get("status") in ("ok", "warn"):
+                return False, f"kanariefuglen har allerede kørt for nylig ({last:%d/%m %H:%M}, {canary_meta.get('status')})"
         return True, "kanariefugl (daglig gratis tørkørsel af hele kæden)"
     if force or event == "workflow_dispatch":
         return True, "manuel kørsel"
@@ -2387,6 +2391,18 @@ def main(argv: list[str] | None = None) -> int:
                                "trace": eo.redact(traceback.format_exc())[-4000:]})
         con.say(mk.status_line(makro_snap))
 
+    # Makrovagten: frygt, kredit, stress, rentekurve, arbejdsmarked, aktiefald, olie, valuta og guld (ingen LLM).
+    macro: dict | None = None
+    with quiet_fds(log_path):
+        try:
+            macro = mv.collect(ref.date().isoformat(), fr.FredClient(), eo.EodhdClient() if eo.api_key() else None,
+                               buffett=(fred_snap or {}).get("buffett"))
+            macro["generated_at"] = dt.datetime.now(STO).isoformat(timespec="seconds")
+        except Exception as exc:  # noqa: BLE001 - vagten må aldrig stoppe kørslen
+            errors.append({"stage": "makrovagt", "type": type(exc).__name__, "message": eo.redact(fr.redact(str(exc)))[:2000],
+                           "trace": eo.redact(fr.redact(traceback.format_exc()))[-4000:]})
+    con.say(mv.status_line(macro))
+
     horizon = int(os.environ.get("VT_EARNINGS_DAYS", "14"))
     with quiet_fds(log_path):  # yfinance skriver advarsler, der kan nævne symboler
         verified = dtj.verified_reports(datacheck)
@@ -2412,7 +2428,7 @@ def main(argv: list[str] | None = None) -> int:
             if not args.dry_run:
                 VT_PATCHES.update(patch_vibe_trading())
                 brief = "\n\n".join(b for b in (dtj.agent_brief(datacheck), fr.agent_brief(fred_snap),
-                                              mk.agent_brief(makro_snap)) if b)
+                                              mk.agent_brief(makro_snap), mv.agent_brief(macro)) if b)
                 shellfree = prepare_shellfree_presets(Path.home() / ".vibe-trading" / "swarm" / "presets", brief=brief,
                                                       eodhd_ready=bool(eodhd_info.get("tool") and eodhd_info.get("key")),
                                                       fred_ready=fred_ready)
@@ -2430,9 +2446,9 @@ def main(argv: list[str] | None = None) -> int:
     canary: dict | None = None
     health: dict | None = None  # kanariefuglens tjek af kæden – også i hver rigtig rapport (gratis, ingen porteføljedata)
     with contextlib.suppress(Exception):
-        health = kn.summary(canary_checks(portfolio, datacheck, fred_snap, makro_snap, runtime is not None, vt_why))
+        health = kn.summary(canary_checks(portfolio, datacheck, fred_snap, makro_snap, runtime is not None, vt_why, macro))
     if args.canary:
-        canary = health or kn.summary(canary_checks(portfolio, datacheck, fred_snap, makro_snap, runtime is not None, vt_why))
+        canary = health or kn.summary(canary_checks(portfolio, datacheck, fred_snap, makro_snap, runtime is not None, vt_why, macro))
         for line in kn.console_lines(canary["checks"]):
             con.say(line)
     elif health:
@@ -2528,7 +2544,7 @@ def main(argv: list[str] | None = None) -> int:
                       "cash_reserved_sek": portfolio.get("cash_reserved_sek") or 0.0,
                       "weights_cost": cost_weights(portfolio)},
         "upcoming_reports": reports, "plan": [{"preset": s["preset"], "reason": s["reason"]} for s in plan],
-        "datacheck": datacheck, "eodhd": eodhd_info, "fred": fred_snap, "makro_eu": makro_snap, "health": health,
+        "datacheck": datacheck, "eodhd": eodhd_info, "fred": fred_snap, "makro_eu": makro_snap, "macro": macro, "health": health,
         "runs": runs,
         "totals": {"tokens_in": tin, "tokens_out": tout, "duration_s": round(time.monotonic() - t0),
                    "est_cost_usd": round(sum(r.get("est_cost_usd", 0) for r in runs), 2),
@@ -2551,6 +2567,8 @@ def main(argv: list[str] | None = None) -> int:
               "datacheck": datacheck["status"] if datacheck else "ikke kørt"}
     if canary:
         public["canary"] = {**canary, "duration_s": round(time.monotonic() - t0), "github_run_id": gh_run}
+        if macro:  # offentligt: kun markedsdata (FRED og EODHD), aldrig porteføljen
+            public["macro"] = macro
     try:
         envelope = fit_payload(payload, passphrase, public, iterations)
         assert decrypt(envelope, passphrase)["week"]["id"] == week["id"], "kryptering kunne ikke verificeres"
@@ -2581,7 +2599,7 @@ def health_note(health: dict | None) -> str:
 
 
 def canary_checks(portfolio: dict, datacheck: dict | None, fred_snap: dict | None, makro_snap: dict | None,
-                  runtime_ok: bool, vt_why: str = "") -> list[dict]:
+                  runtime_ok: bool, vt_why: str = "", macro: dict | None = None) -> list[dict]:
     """Kanariefuglens tjek. Noterne må aldrig indeholde porteføljedata: kun status, antal og tekst om kilderne."""
     checks = [kn.check("secrets", "Secrets", True, "VT_RESULTS_PASSPHRASE og VT_PORTFOLIO kunne læses")]
     checks.append(kn.check("anthropic", "Anthropic-nøgle og model",
@@ -2614,6 +2632,10 @@ def canary_checks(portfolio: dict, datacheck: dict | None, fred_snap: dict | Non
         checks.append(kn.check("fred", "FRED", None, fr.status_line(fred_snap)))
     if makro_snap is not None:
         checks.append(kn.check("makro", "Makro EU/Norden (EODHD)", bool(makro_snap.get("ok")), mk.status_line(makro_snap)))
+    if macro is not None:  # vagtens datagrundlag – selve niveauet (grøn/gul/rød) gør aldrig kanariefuglen rød
+        n = (macro.get("counts") or {}).get("signals", 0)
+        checks.append(kn.check("makrovagt", "Makrovagt", True if n >= 12 else None,
+                               mv.status_line(macro) + ("" if n >= 12 else " – for få signaler, se kilderne")))
     checks.append(kn.check("runtime", "Runner-opstart", runtime_ok, "plan lagt og tørkørsels-motor startet" if runtime_ok
                            else "opstart fejlede (detaljer krypteret i kuverten)"))
     return checks

@@ -127,13 +127,15 @@ def write(results: Path, envelope: dict) -> Path:
         hist = [h for h in old.get("history", []) if h.get("run_id") != pub.get("run_id")]
     except Exception:  # noqa: BLE001
         hist = []
+    mac = pub.get("macro") or None
     entry = {"run_id": pub.get("run_id"), "generated_at": pub.get("generated_at"), "status": can.get("status"),
+             "macro_level": (mac or {}).get("level"), "black_swan": bool((mac or {}).get("black_swan")),
              "ok": can.get("ok"), "warn": can.get("warn"), "fail": can.get("fail"), "duration_s": can.get("duration_s")}
     hist = sorted(hist + [entry], key=lambda h: str(h.get("generated_at") or ""))[-HISTORY:]
     doc = {"schema": 1, "generated_at": pub.get("generated_at"), "run_id": pub.get("run_id"), "week_id": pub.get("week_id"),
            "status": can.get("status"), "ok": can.get("ok"), "warn": can.get("warn"), "fail": can.get("fail"),
            "duration_s": can.get("duration_s"), "checks": can.get("checks", []), "github_run_id": can.get("github_run_id"),
-           "stale_after_hours": STALE_HOURS, "history": hist}
+           "stale_after_hours": STALE_HOURS, "history": hist, "macro": mac}
     f.write_text(json.dumps(doc, ensure_ascii=False, indent=1) + "\n", "utf-8")
     return d / "latest.enc.json"
 

@@ -123,12 +123,14 @@ def test_extra_nightly_canary_fires_skip_when_tonight_is_already_green(monkeypat
     ok, why = rw.should_run(ref, None, "schedule", False, canary=True, canary_meta=green)
     assert not ok and "04:19" in why
     assert rw.should_run(ref, None, "schedule", False, canary=True, canary_meta={**green, "status": "warn"})[0] is False
-    # rød i nat → prøv igen; gårsdagens → kør; UTC-tid lige før midnat svensk tid tæller som i går
+    # rød → prøv igen; mere end 8 timer siden → kør (eftermiddagens makrovagt); under 8 timer → spring over
     assert rw.should_run(ref, None, "schedule", False, canary=True, canary_meta={**green, "status": "fail"})[0] is True
     assert rw.should_run(ref, None, "schedule", False, canary=True,
-                         canary_meta={"generated_at": "2026-10-21T21:59:00+00:00", "status": "ok"})[0] is True
+                         canary_meta={"generated_at": "2026-10-21T19:29:00+00:00", "status": "ok"})[0] is True
     assert rw.should_run(ref, None, "schedule", False, canary=True,
-                         canary_meta={"generated_at": "2026-10-21T22:01:00+00:00", "status": "ok"})[0] is False
+                         canary_meta={"generated_at": "2026-10-21T21:31:00+00:00", "status": "ok"})[0] is False
+    afternoon = rw.now_sto("2026-10-22T16:47")
+    assert rw.should_run(afternoon, None, "schedule", False, canary=True, canary_meta=green)[0] is True
     # knaptryk kører altid; ødelagt eller manglende statusfil → kør
     assert rw.should_run(ref, None, "workflow_dispatch", False, canary=True, canary_meta=green)[0] is True
     assert rw.should_run(ref, None, "schedule", True, canary=True, canary_meta=green)[0] is True
