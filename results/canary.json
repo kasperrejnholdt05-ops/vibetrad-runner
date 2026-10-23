@@ -1,13 +1,13 @@
 {
  "schema": 1,
- "generated_at": "2026-10-23T10:26:44+02:00",
- "run_id": "2026-W43_20261023-1026_39924435702",
+ "generated_at": "2026-10-23T20:46:41+02:00",
+ "run_id": "2026-W43_20261023-2046_40005796959",
  "week_id": "2026-W43",
  "status": "ok",
  "ok": 10,
  "warn": 0,
  "fail": 0,
- "duration_s": 43,
+ "duration_s": 52,
  "checks": [
   {
    "id": "secrets",
@@ -37,7 +37,7 @@
    "id": "datatjek",
    "label": "Datatjek",
    "ok": true,
-   "note": "PASS · 29 ok, 0 advarsler, 0 fejl"
+   "note": "PASS · 30 ok, 0 advarsler, 0 fejl"
   },
   {
    "id": "regnskab",
@@ -61,7 +61,7 @@
    "id": "makrovagt",
    "label": "Makrovagt",
    "ok": true,
-   "note": "Makrovagt: gul · 0 røde, 3 gule, 0 chok af 18 signaler"
+   "note": "Makrovagt: gul · 0 røde, 2 gule, 0 chok af 18 signaler"
   },
   {
    "id": "runtime",
@@ -70,7 +70,7 @@
    "note": "plan lagt og tørkørsels-motor startet"
   }
  ],
- "github_run_id": "39924435702",
+ "github_run_id": "40005796959",
  "stale_after_hours": 30,
  "history": [
   {
@@ -128,20 +128,31 @@
    "warn": 0,
    "fail": 0,
    "duration_s": 43
+  },
+  {
+   "run_id": "2026-W43_20261023-2046_40005796959",
+   "generated_at": "2026-10-23T20:46:41+02:00",
+   "status": "ok",
+   "macro_level": "yellow",
+   "black_swan": false,
+   "ok": 10,
+   "warn": 0,
+   "fail": 0,
+   "duration_s": 52
   }
  ],
  "macro": {
   "schema": 1,
   "profile": "følsom",
   "ref_date": "2026-10-23",
-  "generated_at": "2026-10-23T10:26:41+02:00",
+  "generated_at": "2026-10-23T20:46:38+02:00",
   "level": "yellow",
   "black_swan": false,
-  "headline": "Gul: tidlige tegn i Nasdaq 100, Euro Stoxx 50 – og aktier er dyre (Buffett-indikatoren)",
+  "headline": "Gul: tidlige tegn i Euro Stoxx 50 – og aktier er dyre (Buffett-indikatoren)",
   "plan": "Hold øje. Din plan kræver ingen handling: dit mandat tåler fald på op til 50 %. Del gerne nye køb op over et par uger i stedet for alt på én dag, og tjek at hver position har tese og kill-kriterie (Plan).",
   "counts": {
    "red": 0,
-   "yellow": 3,
+   "yellow": 2,
    "shocks": 0,
    "signals": 18,
    "stale": 0
@@ -150,25 +161,13 @@
    {
     "id": "dd_stoxx50e",
     "label": "Euro Stoxx 50",
-    "value": 6087.01,
+    "value": 6068.22,
     "unit": "",
-    "date": "2026-10-22",
+    "date": "2026-10-23",
     "level": "yellow",
     "shock": false,
     "stale": false,
-    "note": "7,1 % under toppen det seneste år · i går -1,9 % · 5 dage -1,3 %",
-    "rule": "gul ≥ 7 % under top · rød ≥ 15 % · chok ≤ -3 % på en dag eller ≤ -6 % på 5 dage"
-   },
-   {
-    "id": "dd_ndx",
-    "label": "Nasdaq 100",
-    "value": 28958.69,
-    "unit": "",
-    "date": "2026-10-22",
-    "level": "yellow",
-    "shock": false,
-    "stale": false,
-    "note": "7,3 % under toppen det seneste år · i går -2,9 % · 5 dage -3,3 %",
+    "note": "7,4 % under toppen det seneste år · i går -0,3 % · 5 dage -2,2 %",
     "rule": "gul ≥ 7 % under top · rød ≥ 15 % · chok ≤ -3 % på en dag eller ≤ -6 % på 5 dage"
    },
    {
@@ -222,38 +221,50 @@
    {
     "id": "gold",
     "label": "Guld",
-    "value": 4023.597,
+    "value": 4011.71,
     "unit": "USD",
-    "date": "2026-10-22",
+    "date": "2026-10-23",
     "level": "green",
     "shock": false,
     "stale": false,
-    "note": "4.024 USD pr. ounce, -7,8 % på en måned",
+    "note": "4.012 USD pr. ounce, -6,5 % på en måned",
     "rule": "gul ≥ +10 % på en måned"
    },
    {
     "id": "hy",
     "label": "Kreditspænd, risikable selskabslån (high yield)",
-    "value": 3.27,
+    "value": 3.4,
     "unit": "%",
-    "date": "2026-10-21",
+    "date": "2026-10-22",
     "level": "green",
     "shock": false,
     "stale": false,
-    "note": "Långivere kræver 3,27 procentpoint ekstra for at låne til risikable selskaber (+0,61 pp på en måned)",
+    "note": "Långivere kræver 3,40 procentpoint ekstra for at låne til risikable selskaber (+0,72 pp på en måned)",
     "rule": "gul ≥ 4 · rød ≥ 5.5 · chok +0.75 pp på en måned"
    },
    {
     "id": "ig",
     "label": "Kreditspænd, sikre selskabslån (investment grade)",
-    "value": 0.88,
+    "value": 0.89,
     "unit": "%",
-    "date": "2026-10-21",
+    "date": "2026-10-22",
     "level": "green",
     "shock": false,
     "stale": false,
-    "note": "Ekstra rente for sikre selskaber: 0,88 pp",
+    "note": "Ekstra rente for sikre selskaber: 0,89 pp",
     "rule": "gul ≥ 1.3 · rød ≥ 1.8"
+   },
+   {
+    "id": "dd_ndx",
+    "label": "Nasdaq 100",
+    "value": 29047.611,
+    "unit": "",
+    "date": "2026-10-23",
+    "level": "green",
+    "shock": false,
+    "stale": false,
+    "note": "7,0 % under toppen det seneste år · i går +0,3 % · 5 dage -0,5 %",
+    "rule": "gul ≥ 7 % under top · rød ≥ 15 % · chok ≤ -3 % på en dag eller ≤ -6 % på 5 dage"
    },
    {
     "id": "claims",
@@ -270,25 +281,25 @@
    {
     "id": "dd_omxc25",
     "label": "OMXC25",
-    "value": 1893.41,
+    "value": 1881.45,
     "unit": "",
-    "date": "2026-10-22",
+    "date": "2026-10-23",
     "level": "green",
     "shock": false,
     "stale": false,
-    "note": "2,5 % under toppen det seneste år · i går +0,1 % · 5 dage +2,3 %",
+    "note": "3,1 % under toppen det seneste år · i går -0,6 % · 5 dage +0,9 %",
     "rule": "gul ≥ 7 % under top · rød ≥ 15 % · chok ≤ -3 % på en dag eller ≤ -6 % på 5 dage"
    },
    {
     "id": "dd_omxs30",
     "label": "OMXS30",
-    "value": 3162.777,
+    "value": 3175.698,
     "unit": "",
-    "date": "2026-10-22",
+    "date": "2026-10-23",
     "level": "green",
     "shock": false,
     "stale": false,
-    "note": "5,2 % under toppen det seneste år · i går -2,5 % · 5 dage -2,9 %",
+    "note": "4,8 % under toppen det seneste år · i går +0,4 % · 5 dage -3,7 %",
     "rule": "gul ≥ 7 % under top · rød ≥ 15 % · chok ≤ -3 % på en dag eller ≤ -6 % på 5 dage"
    },
    {
@@ -318,13 +329,13 @@
    {
     "id": "dd_gspc",
     "label": "S&P 500",
-    "value": 7663.43,
+    "value": 7633.33,
     "unit": "",
-    "date": "2026-10-22",
+    "date": "2026-10-23",
     "level": "green",
     "shock": false,
     "stale": false,
-    "note": "2,0 % under toppen det seneste år · i går -1,2 % · 5 dage -1,0 %",
+    "note": "2,4 % under toppen det seneste år · i går -0,4 % · 5 dage -0,3 %",
     "rule": "gul ≥ 7 % under top · rød ≥ 15 % · chok ≤ -3 % på en dag eller ≤ -6 % på 5 dage"
    },
    {
@@ -342,25 +353,25 @@
    {
     "id": "usdsek",
     "label": "USD/SEK",
-    "value": 9.931,
+    "value": 9.941,
     "unit": "SEK",
     "date": "2026-10-23",
     "level": "green",
     "shock": false,
     "stale": false,
-    "note": "1 USD = 9,93 SEK, +0,2 % på en måned",
+    "note": "1 USD = 9,94 SEK, +0,3 % på en måned",
     "rule": "gul ved ± 5 % på en måned"
    },
    {
     "id": "vix",
     "label": "VIX (frygtindeks)",
-    "value": 16.68,
+    "value": 19.03,
     "unit": "",
-    "date": "2026-10-21",
+    "date": "2026-10-22",
     "level": "green",
     "shock": false,
     "stale": false,
-    "note": "VIX er 16,7. Over 22 er markedet nervøst, over 30 bange",
+    "note": "VIX er 19,0. Over 22 er markedet nervøst, over 30 bange",
     "rule": "gul ≥ 22 · rød ≥ 30 · chok +40 % på 5 dage"
    }
   ],
