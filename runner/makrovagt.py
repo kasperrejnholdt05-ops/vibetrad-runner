@@ -352,7 +352,7 @@ def build(series: dict[str, list[tuple[str, float]]], eod_rows: dict[str, list[d
             "plan": PLAN["swan" if swan else level],
             "counts": {"red": len(reds), "yellow": len(yellows), "shocks": len(shocks), "signals": len(live),
                        "stale": len(sig) - len(live)},
-            "signals": sorted(sig, key=lambda s: (-LEVELS.index(s["level"]), not s["shock"], s["label"])),
+            "signals": sorted(sig, key=lambda s: (-LEVELS.index(s["level"]), not s["shock"], s["id"] == "buffett", s["label"])),
             "sources": sources_ok or {},
             "note": "Kun markedsdata (FRED og EODHD). Sorte svaner kan ikke forudsiges – vagthunden opdager stressen "
                     "tidligt. Analyse, ikke rådgivning."}
