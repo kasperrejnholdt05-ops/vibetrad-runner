@@ -1,13 +1,13 @@
 {
  "schema": 1,
- "generated_at": "2026-10-25T08:36:02+01:00",
- "run_id": "2026-W43_20261025-0836_40173275933",
+ "generated_at": "2026-10-25T18:54:28+01:00",
+ "run_id": "2026-W43_20261025-1854_40218569713",
  "week_id": "2026-W43",
  "status": "ok",
  "ok": 10,
  "warn": 0,
  "fail": 0,
- "duration_s": 44,
+ "duration_s": 43,
  "checks": [
   {
    "id": "secrets",
@@ -70,7 +70,7 @@
    "note": "plan lagt og tørkørsels-motor startet"
   }
  ],
- "github_run_id": "40173275933",
+ "github_run_id": "40218569713",
  "stale_after_hours": 30,
  "history": [
   {
@@ -172,13 +172,24 @@
    "warn": 0,
    "fail": 0,
    "duration_s": 44
+  },
+  {
+   "run_id": "2026-W43_20261025-1854_40218569713",
+   "generated_at": "2026-10-25T18:54:28+01:00",
+   "status": "ok",
+   "macro_level": "yellow",
+   "black_swan": false,
+   "ok": 10,
+   "warn": 0,
+   "fail": 0,
+   "duration_s": 43
   }
  ],
  "macro": {
   "schema": 1,
   "profile": "følsom",
   "ref_date": "2026-10-25",
-  "generated_at": "2026-10-25T08:36:00+01:00",
+  "generated_at": "2026-10-25T18:54:27+01:00",
   "level": "yellow",
   "black_swan": false,
   "headline": "Gul: tidlige tegn i Nasdaq 100, Euro Stoxx 50 – og aktier er dyre (Buffett-indikatoren)",
