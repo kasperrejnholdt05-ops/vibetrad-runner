@@ -1,7 +1,7 @@
 {
  "schema": 1,
- "generated_at": "2026-10-25T18:54:28+01:00",
- "run_id": "2026-W43_20261025-1854_40218569713",
+ "generated_at": "2026-10-26T08:48:18+01:00",
+ "run_id": "2026-W43_20261026-0848_40287875864",
  "week_id": "2026-W43",
  "status": "ok",
  "ok": 10,
@@ -70,7 +70,7 @@
    "note": "plan lagt og tørkørsels-motor startet"
   }
  ],
- "github_run_id": "40218569713",
+ "github_run_id": "40287875864",
  "stale_after_hours": 30,
  "history": [
   {
@@ -183,13 +183,24 @@
    "warn": 0,
    "fail": 0,
    "duration_s": 43
+  },
+  {
+   "run_id": "2026-W43_20261026-0848_40287875864",
+   "generated_at": "2026-10-26T08:48:18+01:00",
+   "status": "ok",
+   "macro_level": "yellow",
+   "black_swan": false,
+   "ok": 10,
+   "warn": 0,
+   "fail": 0,
+   "duration_s": 43
   }
  ],
  "macro": {
   "schema": 1,
   "profile": "følsom",
-  "ref_date": "2026-10-25",
-  "generated_at": "2026-10-25T18:54:27+01:00",
+  "ref_date": "2026-10-26",
+  "generated_at": "2026-10-26T08:48:16+01:00",
   "level": "yellow",
   "black_swan": false,
   "headline": "Gul: tidlige tegn i Nasdaq 100, Euro Stoxx 50 – og aktier er dyre (Buffett-indikatoren)",
@@ -277,13 +288,13 @@
    {
     "id": "gold",
     "label": "Guld",
-    "value": 3993.61,
+    "value": 3997.518,
     "unit": "USD",
-    "date": "2026-10-24",
+    "date": "2026-10-25",
     "level": "green",
     "shock": false,
     "stale": false,
-    "note": "3.994 USD pr. ounce, -6,6 % på en måned",
+    "note": "3.998 USD pr. ounce, -6,7 % på en måned",
     "rule": "gul ≥ +10 % på en måned"
    },
    {
@@ -397,13 +408,13 @@
    {
     "id": "usdsek",
     "label": "USD/SEK",
-    "value": 9.923,
+    "value": 9.925,
     "unit": "SEK",
-    "date": "2026-10-23",
+    "date": "2026-10-26",
     "level": "green",
     "shock": false,
     "stale": false,
-    "note": "1 USD = 9,92 SEK, +0,1 % på en måned",
+    "note": "1 USD = 9,93 SEK, +0,1 % på en måned",
     "rule": "gul ved ± 5 % på en måned"
    },
    {
