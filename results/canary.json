@@ -1,13 +1,13 @@
 {
  "schema": 1,
- "generated_at": "2026-10-26T21:11:50+01:00",
- "run_id": "2026-W43_20261026-2111_40393179724",
- "week_id": "2026-W43",
+ "generated_at": "2026-10-27T08:51:51+01:00",
+ "run_id": "2026-W44_20261027-0851_40469522499",
+ "week_id": "2026-W44",
  "status": "ok",
  "ok": 10,
  "warn": 0,
  "fail": 0,
- "duration_s": 43,
+ "duration_s": 42,
  "checks": [
   {
    "id": "secrets",
@@ -49,13 +49,13 @@
    "id": "fred",
    "label": "FRED",
    "ok": true,
-   "note": "FRED: ja, nøglen virker (7 af 7 serier, 9 kald · US 10-årig statsrente 4,96 % pr. 22/10/2026 · Buffett-indikator 255 % (Q2 2026))"
+   "note": "FRED: ja, nøglen virker (7 af 7 serier, 9 kald · US 10-årig statsrente 5,00 % pr. 23/10/2026 · Buffett-indikator 255 % (Q2 2026))"
   },
   {
    "id": "makro",
    "label": "Makro EU/Norden (EODHD)",
    "ok": true,
-   "note": "Makro EU/Norden: ja (Riksbanken 1,75 % → 04/11/2026 · ECB 2,65 % → 29/10/2026 · Sverige 10 år 3,11 %)"
+   "note": "Makro EU/Norden: ja (Riksbanken 1,75 % → 04/11/2026 · ECB 2,65 % → 29/10/2026 · Sverige 10 år 3,10 %)"
   },
   {
    "id": "makrovagt",
@@ -70,7 +70,7 @@
    "note": "plan lagt og tørkørsels-motor startet"
   }
  ],
- "github_run_id": "40393179724",
+ "github_run_id": "40469522499",
  "stale_after_hours": 30,
  "history": [
   {
@@ -205,13 +205,24 @@
    "warn": 0,
    "fail": 0,
    "duration_s": 43
+  },
+  {
+   "run_id": "2026-W44_20261027-0851_40469522499",
+   "generated_at": "2026-10-27T08:51:51+01:00",
+   "status": "ok",
+   "macro_level": "yellow",
+   "black_swan": false,
+   "ok": 10,
+   "warn": 0,
+   "fail": 0,
+   "duration_s": 42
   }
  ],
  "macro": {
   "schema": 1,
   "profile": "følsom",
-  "ref_date": "2026-10-26",
-  "generated_at": "2026-10-26T21:11:48+01:00",
+  "ref_date": "2026-10-27",
+  "generated_at": "2026-10-27T08:51:49+01:00",
   "level": "yellow",
   "black_swan": false,
   "headline": "Gul: tidlige tegn i Buffett-indikator (aktier i forhold til økonomien)",
@@ -239,13 +250,13 @@
    {
     "id": "usd",
     "label": "Dollaren mod andre valutaer",
-    "value": 121.405,
+    "value": 121.32,
     "unit": "",
-    "date": "2026-10-16",
+    "date": "2026-10-23",
     "level": "green",
     "shock": false,
     "stale": false,
-    "note": "+2,1 % på en måned",
+    "note": "+1,0 % på en måned",
     "rule": "gul ≥ +4 % på en måned"
    },
    {
@@ -287,13 +298,13 @@
    {
     "id": "gold",
     "label": "Guld",
-    "value": 3997.518,
+    "value": 4005.728,
     "unit": "USD",
-    "date": "2026-10-25",
+    "date": "2026-10-26",
     "level": "green",
     "shock": false,
     "stale": false,
-    "note": "3.998 USD pr. ounce, -6,7 % på en måned",
+    "note": "4.006 USD pr. ounce, -6,5 % på en måned",
     "rule": "gul ≥ +10 % på en måned"
    },
    {
@@ -323,13 +334,13 @@
    {
     "id": "dd_ndx",
     "label": "Nasdaq 100",
-    "value": 29304.934,
+    "value": 29273.4,
     "unit": "",
     "date": "2026-10-26",
     "level": "green",
     "shock": false,
     "stale": false,
-    "note": "6,1 % under toppen det seneste år · i går +1,2 % · 5 dage -0,8 %",
+    "note": "6,2 % under toppen det seneste år · i går +1,1 % · 5 dage -0,9 %",
     "rule": "gul ≥ 7 % under top · rød ≥ 15 % · chok ≤ -3 % på en dag eller ≤ -6 % på 5 dage"
    },
    {
@@ -385,7 +396,7 @@
     "label": "Rentekurve 10 år − 3 mdr.",
     "value": 0.78,
     "unit": "pp",
-    "date": "2026-10-23",
+    "date": "2026-10-26",
     "level": "green",
     "shock": false,
     "stale": false,
@@ -395,7 +406,7 @@
    {
     "id": "dd_gspc",
     "label": "S&P 500",
-    "value": 7678.37,
+    "value": 7676.77,
     "unit": "",
     "date": "2026-10-26",
     "level": "green",
@@ -421,7 +432,7 @@
     "label": "USD/SEK",
     "value": 9.952,
     "unit": "SEK",
-    "date": "2026-10-26",
+    "date": "2026-10-27",
     "level": "green",
     "shock": false,
     "stale": false,
