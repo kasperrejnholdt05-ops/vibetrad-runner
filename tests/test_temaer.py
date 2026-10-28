@@ -98,8 +98,10 @@ def test_black_swan_needs_reds_in_three_themes():
     m = mv.build(f, e, None, REF)
     assert set(m["red_themes"]) == {"energi", "renter"} and not m["black_swan"]
     f["BAMLH0A3HYC"] = flat(12.5)               # kredit rød → tre temaer
-    m = mv.build(f, e, None, REF)
+    m = mv.build(f, e, None, REF, swan_rule="tre_temaer")
     assert m["black_swan"] and set(m["red_themes"]) >= {"energi", "renter", "kredit"}
+    live = mv.build(f, e, None, REF)            # live-reglen (kun chok): rødt niveau, ingen sort svane
+    assert not live["black_swan"] and live["level"] == "red"
 
 
 def test_ai_signals_below_falling_200d_are_red_and_feed_the_ai_scenario():

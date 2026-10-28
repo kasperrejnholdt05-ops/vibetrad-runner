@@ -21,8 +21,9 @@ investeringsrådgivning.
   - aktiemarkederne
 
   Seks scenarier viser, hvilken vej det trækker: blød landing, stagflation, rente- og gældschok, AI-brud, kreditkrise
-  og geopolitisk chok. "Selvtilfredshed" markerer røde temaer i et roligt marked. Sort svane-varsel = et chok, eller
-  røde signaler i mindst tre temaer. Buffett-indikatoren, statens rentebyrde og chippriserne er *baggrund*: signalet
+  og geopolitisk chok. "Selvtilfredshed" markerer røde temaer i et roligt marked. Sort svane-varsel = et chok
+  (en usædvanlig hurtig bevægelse); røde signaler i mindst tre temaer giver rødt niveau, men ikke sort svane (valgt ud
+  fra analysen 28/10/2026, se nedenfor). Buffett-indikatoren, statens rentebyrde og chippriserne er *baggrund*: signalet
   vises med sin egen farve, men tæller højst som gult – i makrovagtens niveau, i sort svane, i temaets farve og i
   "selvtilfredshed" – fordi de kan ligge rødt i årevis.
   Rentebyrden er NIPA-renter divideret med statens samlede indtægter (`FGRECPT`); grænserne 18/24 % svarer til 15/20 %
@@ -110,7 +111,37 @@ kun med læseadgang. Resultatet står i loggen.
   - afkast efter 1 og 3 år
   - hvor mange dybe fald der blev købt
 
-Reglen for sort svane vælges med `SWAN_RULE` i `runner/makrovagt.py`.
+Reglen for sort svane vælges med `SWAN_RULE` i `runner/makrovagt.py`, top-alderen med `TOP_DAYS` i `runner/zoner.py`.
+
+### Resultat 28/10/2026 (kørsel 40658332270)
+Sort svane, S&P 500, 2007–2026 (1.034 uger, 7 fald på mindst 15 %):
+
+| Regel | Tændt | Sidste 2 år | Længste stræk | S&P −10 % inden 3 mdr | Tidligt i de store fald |
+|---|---|---|---|---|---|
+| tre_temaer (før) | 30,8 % af ugerne | 33,7 % | 86 uger | 11 af 87 varsler (13 %) | 6 af 7 |
+| frisk | 27,5 % | 32,7 % | 22 uger | 17 af 102 (17 %) | 6 af 7 |
+| **kun_chok (valgt)** | **18,5 %** | 29,8 % | **9 uger** | **19 af 102 (19 %)** | 6 af 7 |
+
+Alle tre regler var tændt før bunden i 7 af 7 fald. Det fald, ingen af dem varslede tidligt, var corona-krakket
+i februar 2020 (det kom på få dage). De tre røde temaer gav ingen tidligere varsler, kun flere og længere alarmer.
+
+Epistemisk status: et varsel, der er tændt 18,5 % af ugerne, rammer et vindue på 4–6 måneder ret ofte ved
+tilfældighed. Tallene viser, at "kun chok" er den bedste af de tre regler, ikke at sort svane kan forudsige et fald.
+Brug det som stresssignal og følg trancherne.
+
+Top-alder, 3 års median efter køb (% inkl. alle trancher) og antal trancher:
+
+| Indeks | 3 år (i dag) | 2 år | 1 år |
+|---|---|---|---|
+| S&P 500 | 35,8 % · 137 | 30,2 % · 160 | 34,8 % · 722 |
+| Nasdaq 100 | 60,0 % · 167 | 46,5 % · 177 | 60,0 % · 546 |
+| OMXS30 | 27,2 % · 124 | 26,5 % · 151 | 38,4 % · 668 |
+| OMXC25 | 37,0 % · 24 | 37,0 % · 29 | 10,9 % · 89 |
+| OBX | 39,0 % · 69 | 49,3 % · 88 | 80,1 % · 339 |
+
+En 1-årig top giver 3–5 gange så mange trancher, end reserven kan bære, og er dårligst for OMXC25. 2 år er ikke
+bedre end 3 år på fire af fem indeks. **3 år bliver.** Prisen er, at OMXC25's første korrektionsordre i oktober 2026
+ligger 4,5 % under kursen, fordi toppen er fra 13/09/2024.
 
 ## Samme facit i Python og JavaScript
 `tests/fixtures/zoner_cases.json` bygges af `tests/make_zoner_fixtures.py` ud fra Python-motoren.

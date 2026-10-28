@@ -5,7 +5,7 @@ rentekurve, arbejdsmarked (Sahm-reglen, nye ledige), aktiefald og dagschok, olie
 plus Buffett-indikatoren som baggrund for, hvor hårdt et fald kan blive.
 
 Hvert signal får grøn, gul eller rød. Et "chok" er en usædvanlig hurtig bevægelse (fx VIX +40 % på 5 dage
-eller et dagsfald på 3 %). Sort svane-varsel = mindst ét chok eller røde signaler i mindst tre temaer (se nedenfor).
+eller et dagsfald på 3 %). Sort svane-varsel = mindst ét chok (SWAN_RULE; valgt ud fra analysen 28/10/2026).
 Langsomme baggrundstal (Buffett-indikatoren, statens rentebyrde, chippriserne) tæller højst som gule.
 Sorte svaner kan ikke forudsiges; vagthunden kan kun opdage stressen tidligt, mens der er tid til at tænke.
 
@@ -13,7 +13,7 @@ Fra 27/10/2026 (runner/temaer.py) er vagthunden bygget til de omstændigheder, v
 statsgæld med rentebetalinger på ca. 1.000 mia. USD om året, AI-priser bygget på forventet omsætning, mangel på
 chips og strøm, olie omkring 120 USD efter Hormuz-krisen, krig og politisk uro. Alle signaler hører til ét af ti
 temaer, og seks scenarier viser, hvilken vej det trækker (blød landing, stagflation, rente- og gældschok, AI-brud,
-kreditkrise, geopolitisk chok). Sort svane-varsel = et chok, eller røde signaler i mindst tre temaer.
+kreditkrise, geopolitisk chok). Røde signaler i mindst tre temaer giver rødt niveau, men ikke sort svane.
 
 Grænserne er den følsomme profil (Kasper 23/10/2026: "tidlig og følsom"): hellere en gul for meget end en
 rød for sent. Resultatet ligger offentligt i results/vagt.json (kun markedsdata) og vises øverst på Vagt.
@@ -332,7 +332,13 @@ PLAN = {
 #   usædvanligt, der sker hurtigt" – det er det, sort svane skal betyde.
 # - "kun_chok": kun hurtige bevægelser.
 SWAN_RULES = ("tre_temaer", "frisk", "kun_chok")
-SWAN_RULE = "tre_temaer"
+# Valgt 28/10/2026 ud fra "Vibetrad analyse" (S&P 500, uge for uge 2007–2026, 1.034 uger, 7 fald på mindst 15 %):
+#   tre_temaer: tændt 30,8 % af ugerne, længste stræk 86 uger, S&P −10 % inden 3 mdr efter 13 % af varslerne
+#   frisk:      tændt 27,5 %, længste 22 uger, 17 %
+#   kun_chok:   tændt 18,5 %, længste 9 uger, 19 %
+# Alle tre var tændt tidligt i 6 af 7 store fald og før bunden i 7 af 7: de tre røde temaer tilføjede ingen
+# tidlige varsler, kun flere og længere alarmer. Røde temaer giver stadig rødt niveau – sort svane er kun chok.
+SWAN_RULE = "kun_chok"
 SWAN_FRESH_DAYS = 30
 
 

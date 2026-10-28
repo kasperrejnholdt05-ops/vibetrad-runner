@@ -67,13 +67,18 @@ def test_credit_shock_and_vix_spike_are_shocks():
     assert m["black_swan"]
 
 
-def test_three_reds_without_shock_is_a_black_swan_warning():
+def test_three_reds_without_shock_is_red_but_no_swan_under_the_live_rule():
+    """Analysen 28/10/2026: tre røde temaer gav ingen tidligere varsler end chokkene, kun længere alarmer."""
     f = calm_fred()
     f["VIXCLS"] = [(d, 31.0) for d, _ in f["VIXCLS"]]        # rød, men ingen spike (flad)
     f["SAHMREALTIME"] = [(d, 0.6) for d, _ in f["SAHMREALTIME"]]
     f["STLFSI4"] = [(d, 1.4) for d, _ in f["STLFSI4"]]
+    assert mv.SWAN_RULE == "kun_chok"
     m = mv.build(f, calm_eod(), None, REF)
-    assert m["counts"]["red"] == 3 and m["counts"]["shocks"] == 0 and m["black_swan"]
+    assert m["counts"]["red"] == 3 and m["counts"]["shocks"] == 0 and not m["black_swan"]
+    assert m["level"] == "red" and m["headline"].startswith("Rød:") and m["swan_rule"] == "kun_chok"
+    old = mv.build(f, calm_eod(), None, REF, swan_rule="tre_temaer")   # den gamle regel kan stadig vælges
+    assert old["black_swan"]
 
 
 def test_stale_series_do_not_trigger():
