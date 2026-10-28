@@ -136,7 +136,10 @@ def test_collect_never_raises_and_counts_sources():
             return eod_flat(20.0 if sym == "VIX.INDX" else 100.0)
 
     m = mv.collect(REF, BadFred(), Eod())
-    assert m["sources"]["fred"] == "0 af 10 serier" and m["sources"]["eodhd"] == "8 af 8 serier"
+    n_fred = len(set([x[0] for x in mv.FRED_SERIES] + [x[0] for x in mv.tm.FRED_EXTRA]))
+    n_eod = len(mv.EOD_SERIES) + len(mv.tm.EOD_EXTRA)
+    assert m["sources"]["fred"] == f"0 af {n_fred} serier"
+    assert m["sources"]["eodhd"] == f"{n_eod} af {n_eod} serier"
     assert any(s["id"] == "vix" for s in m["signals"])  # reserve fra EODHD
     assert mv.collect(REF, None, None)["counts"]["signals"] == 0
     assert "Makrovagt: grøn" in mv.status_line(m)

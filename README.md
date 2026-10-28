@@ -7,6 +7,22 @@ investeringsrådgivning.
 - **Makrovagt** (`runner/makrovagt.py`): 18 signaler fra FRED og EODHD (VIX, kreditspænd, finansiel stress,
   rentekurve, Sahm-reglen, nye ledige, olie, dollar, krone, guld, aktiefald og dagschok) plus Buffett-indikatoren.
   Hvert signal er grøn, gul eller rød. Sort svane-varsel = mindst ét chok eller mindst tre røde.
+- **Risikotemaer og scenarier** (`runner/temaer.py`): yderligere ca. 27 signaler for netop de risici, der præger nu, i ti
+  temaer:
+  - renter og inflation (10- og 30-årig rente, realrente, prissatte renteforhøjelser, inflationsforventning, CPI)
+  - statsgæld (terminspræmie, renter i % af indtægterne, "renter op og dollar ned")
+  - kredit (CCC, BBB, bankernes lånestandarder, private credit)
+  - likviditet (SOFR mod IORB, reverse repo)
+  - AI og tech-priser (SOXX, NVIDIA, CoreWeave, markedets bredde, Nasdaq mod S&P)
+  - energi (Brent i niveau og år til år, naturgas)
+  - chips (halvlederpriser, TSMC, taiwanske dollar)
+  - geopolitik og politisk uro (EPU-indekset, guld)
+  - økonomi og job
+  - aktiemarkederne
+
+  Seks scenarier viser, hvilken vej det trækker: blød landing, stagflation, rente- og gældschok, AI-brud, kreditkrise
+  og geopolitisk chok. "Selvtilfredshed" markerer røde temaer i et roligt marked. Sort svane-varsel = et chok, eller
+  røde signaler i mindst tre temaer.
 - **Zonemotor** (`runner/zoner.py` og den identiske `web/zoner.js`): faldet fra toppen for S&P 500, Nasdaq 100,
   OMXS30, OMXC25 og OBX. Hver zone har tre trancher.
 - **Backtest og afspilning**: reglerne er kørt igennem al historik (S&P 500 siden 1960) og uge for uge gennem

@@ -8,6 +8,12 @@ Hvert signal får grøn, gul eller rød. Et "chok" er en usædvanlig hurtig bev�
 eller et dagsfald på 3 %). Sort svane-varsel = mindst ét chok eller mindst tre røde signaler på én gang.
 Sorte svaner kan ikke forudsiges; vagthunden kan kun opdage stressen tidligt, mens der er tid til at tænke.
 
+Fra 27/10/2026 (runner/temaer.py) er vagthunden bygget til de omstændigheder, vi står i: renter over 5 %, en
+statsgæld med rentebetalinger på ca. 1.000 mia. USD om året, AI-priser bygget på forventet omsætning, mangel på
+chips og strøm, olie omkring 120 USD efter Hormuz-krisen, krig og politisk uro. Alle signaler hører til ét af ti
+temaer, og seks scenarier viser, hvilken vej det trækker (blød landing, stagflation, rente- og gældschok, AI-brud,
+kreditkrise, geopolitisk chok). Sort svane-varsel = et chok, eller røde signaler i mindst tre temaer.
+
 Grænserne er den følsomme profil (Kasper 23/10/2026: "tidlig og følsom"): hellere en gul for meget end en
 rød for sent. Resultatet ligger offentligt i results/vagt.json (kun markedsdata) og vises øverst på Vagt.
 """
@@ -15,6 +21,8 @@ from __future__ import annotations
 
 import datetime as dt
 from typing import Any
+
+import temaer as tm
 
 PROFILE = "følsom"
 
@@ -325,11 +333,17 @@ def build(series: dict[str, list[tuple[str, float]]], eod_rows: dict[str, list[d
     b = buffett_signal(buffett)
     if b:
         sig.append(b)
+    sig += tm.fred_extra_signals(series, ref_day) + tm.eod_extra_signals(eod_rows, ref_day)
+    for s_ in sig:
+        s_.setdefault("theme", tm.theme_of(s_["id"]))
     live = [s for s in sig if not s["stale"]]
-    reds = [s for s in live if s["level"] == "red" and s["id"] != "buffett"]
+    reds = [s for s in live if s["level"] == "red" and s["id"] not in ("buffett", "int_rev")]
     yellows = [s for s in live if s["level"] == "yellow"]
     shocks = [s for s in live if s["shock"]]
-    swan = bool(shocks) or len(reds) >= 3
+    # Sort svane = et chok, eller røde signaler i mindst tre forskellige temaer på én gang. Flere røde i samme tema
+    # (fx olie både i niveau og år til år) er ét problem, ikke tre.
+    red_themes = sorted({s["theme"] for s in reds})
+    swan = bool(shocks) or len(red_themes) >= 3
     level = "red" if reds else "yellow" if yellows else "green"
     if swan:
         level = "red"
@@ -338,7 +352,9 @@ def build(series: dict[str, list[tuple[str, float]]], eod_rows: dict[str, list[d
     if swan:
         head = "Sort svane-varsel: " + ", ".join(s["label"] for s in (shocks or reds)[:3])
     elif level == "red":
-        head = "Rød: alvorlig stress i " + ", ".join(s["label"] for s in reds[:3])
+        tl = {t[0]: t[1] for t in tm.THEMES}
+        head = "Rød: alvorlig stress i " + ", ".join(
+            f"{tl.get(t, t).lower()} ({next(s['label'] for s in reds if s['theme'] == t)})" for t in red_themes[:3])
     elif level == "yellow":
         ys = [s for s in yellows if s["id"] != "buffett"] or yellows  # Buffett nævnes i halen, ikke to gange
         head = "Gul: tidlige tegn i " + ", ".join(s["label"] for s in ys[:3]) + (" m.fl." if len(ys) > 3 else "")
@@ -346,8 +362,10 @@ def build(series: dict[str, list[tuple[str, float]]], eod_rows: dict[str, list[d
         head = "Grøn: ingen tegn på makrostress"
     if rich and level != "green" and not (level == "yellow" and all(s["id"] == "buffett" for s in yellows)):
         head += " – og aktier er dyre (Buffett-indikatoren)"
-    return {"schema": 1, "profile": PROFILE, "ref_date": ref_day, "generated_at": generated_at,
-            "level": level, "black_swan": swan, "headline": head,
+    th = tm.themes(sig)
+    return {"schema": 2, "profile": PROFILE, "ref_date": ref_day, "generated_at": generated_at,
+            "level": level, "black_swan": swan, "headline": head, "red_themes": red_themes,
+            "themes": th, "scenarios": tm.scenarios(sig), "complacency": tm.complacency(sig, th),
             "plan": PLAN["swan" if swan else level],
             "counts": {"red": len(reds), "yellow": len(yellows), "shocks": len(shocks), "signals": len(live),
                        "stale": len(sig) - len(live)},
@@ -358,14 +376,14 @@ def build(series: dict[str, list[tuple[str, float]]], eod_rows: dict[str, list[d
 
 
 def collect(ref_day: str, fred_client: Any = None, eod_client: Any = None, buffett: dict | None = None,
-            *, days: int = 400) -> dict:
+            *, days: int = 430) -> dict:
     """Henter data og bygger makrovagten. Fejler aldrig: manglende kilder giver færre signaler."""
     start = (dt.date.fromisoformat(ref_day) - dt.timedelta(days=days)).isoformat()
     series: dict[str, list[tuple[str, float]]] = {}
     ok = {"fred": None, "eodhd": None}
     if fred_client is not None and getattr(fred_client, "available", False):
         got = 0
-        for sid, *_ in FRED_SERIES:
+        for sid in dict.fromkeys([x[0] for x in FRED_SERIES] + [x[0] for x in tm.FRED_EXTRA]):
             try:
                 series[sid] = fred_client.observations(sid, start, ref_day)
                 got += bool(series[sid])
@@ -373,17 +391,17 @@ def collect(ref_day: str, fred_client: Any = None, eod_client: Any = None, buffe
                 series[sid] = []
             if getattr(fred_client, "dead", False):
                 break
-        ok["fred"] = f"{got} af {len(FRED_SERIES)} serier"
+        ok["fred"] = f"{got} af {len(set([x[0] for x in FRED_SERIES] + [x[0] for x in tm.FRED_EXTRA]))} serier"
     rows: dict[str, list[dict]] = {}
     if eod_client is not None and getattr(eod_client, "available", False):
         got = 0
-        for sym, *_ in EOD_SERIES:
+        for sym in dict.fromkeys([x[0] for x in EOD_SERIES] + [x[0] for x in tm.EOD_EXTRA]):
             try:
                 rows[sym] = eod_client.eod(sym, start, ref_day)
                 got += bool(rows[sym])
             except Exception:  # noqa: BLE001
                 rows[sym] = []
-        ok["eodhd"] = f"{got} af {len(EOD_SERIES)} serier"
+        ok["eodhd"] = f"{got} af {len(EOD_SERIES) + len(tm.EOD_EXTRA)} serier"
     return build(series, rows, buffett, ref_day, sources_ok=ok)
 
 
@@ -399,6 +417,9 @@ def agent_brief(m: dict | None) -> str | None:
     if not m:
         return None
     lines = [f"**Makrovagt ({DA.get(m['level'])}{', sort svane-varsel' if m.get('black_swan') else ''}):** {m['headline']}."]
+    for sc in m.get("scenarios", []):
+        if sc.get("score") is not None:
+            lines.append(f"- Scenarie {sc['label']}: {sc['score']} % af kendetegnene til stede")
     for s in m.get("signals", []):
         if s["level"] != "green" and not s["stale"]:
             lines.append(f"- {DA[s['level']]}{' · chok' if s['shock'] else ''}: {s['label']} – {s['note']} ({_dmy(s['date'])})")
