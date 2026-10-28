@@ -6,7 +6,7 @@ plus Buffett-indikatoren som baggrund for, hvor hårdt et fald kan blive.
 
 Hvert signal får grøn, gul eller rød. Et "chok" er en usædvanlig hurtig bevægelse (fx VIX +40 % på 5 dage
 eller et dagsfald på 3 %). Sort svane-varsel = mindst ét chok eller røde signaler i mindst tre temaer (se nedenfor).
-Langsomme baggrundstal (Buffett-indikatoren, statens rentebyrde) tæller højst som gule.
+Langsomme baggrundstal (Buffett-indikatoren, statens rentebyrde, chippriserne) tæller højst som gule.
 Sorte svaner kan ikke forudsiges; vagthunden kan kun opdage stressen tidligt, mens der er tid til at tænke.
 
 Fra 27/10/2026 (runner/temaer.py) er vagthunden bygget til de omstændigheder, vi står i: renter over 5 %, en
@@ -338,6 +338,8 @@ def build(series: dict[str, list[tuple[str, float]]], eod_rows: dict[str, list[d
     for s_ in sig:
         s_.setdefault("theme", tm.theme_of(s_["id"]))
     live = [s for s in sig if not s["stale"]]
+    # Baggrund (tm.BACKGROUND: værdiansættelse, rentebyrde, chippriser) kan ligge rødt i årevis: tallet vises rødt, men
+    # tæller højst som gult – i niveauet, i sort svane, i temaernes farve og i "selvtilfredshed".
     reds = [s for s in live if tm.counted_level(s) == "red"]
     yellows = [s for s in live if tm.counted_level(s) == "yellow"]
     shocks = [s for s in live if s["shock"]]

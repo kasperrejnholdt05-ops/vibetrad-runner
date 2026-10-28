@@ -45,7 +45,7 @@ def regime_oktober_2026():
          "DFEDTARU": flat(4.0), "T10YIE": flat(2.34), "SOFR": flat(3.93), "IORB": flat(3.90), "RRPONTSYD": flat(30.0),
          "BAMLH0A3HYC": flat(7.5), "BAMLC0A4CBBB": flat(1.2), "DHHNGSP": flat(4.1), "USEPUINDXD": flat(180.0),
          "CPIAUCSL": monthly(320.0, 0.0025), "PCU33443344": monthly(100.0, 0.004), "THREEFYTP10": flat(0.55), "DRTSCILM": [("2026-07-01", 12.0)],
-         "A091RC1Q027SBEA": [("2026-04-01", 1050.0)], "W006RC1Q027SBEA": [("2026-04-01", 5400.0)]}
+         "A091RC1Q027SBEA": [("2026-04-01", 1280.0)], "FGRECPT": [("2026-04-01", 5600.0)]}
     up = ramp(100.0, 140.0)
     e = {s: eod(up) for s, *_ in mv.EOD_SERIES}
     e["VIX.INDX"] = eod(flat(17.0))
@@ -70,7 +70,7 @@ def test_regime_today_energy_red_rates_yellow_and_complacency():
     assert s["hikes"]["level"] == "yellow" and "renteforhøjelser" in s["hikes"]["note"]
     assert s["sofr_iorb"]["level"] == "yellow" and s["rrp"]["level"] == "yellow"
     assert s["bei10"]["level"] == "green" and s["hy"]["level"] == "green"
-    assert s["int_rev"]["level"] == "yellow" and 19 < s["int_rev"]["value"] < 20
+    assert s["int_rev"]["level"] == "yellow" and 22 < s["int_rev"]["value"] < 24 and "samlede" in s["int_rev"]["note"]
     th = {t["id"]: t for t in m["themes"]}
     assert th["energi"]["level"] == "red" and th["renter"]["level"] == "yellow" and th["kredit"]["level"] == "green"
     assert m["level"] == "red" and not m["black_swan"]  # rødt i ét tema er ikke en sort svane
@@ -150,7 +150,7 @@ def test_background_signals_never_make_a_theme_red():
     stress nu: før 28/10/2026 farvede den Statsgæld rødt og kom med i "selvtilfredshed"."""
     f, e = regime_oktober_2026()
     f["A091RC1Q027SBEA"] = [("2026-04-01", 1280.0)]
-    f["W006RC1Q027SBEA"] = [("2026-04-01", 3815.0)]  # 33,6 % som i den rigtige kørsel
+    f["FGRECPT"] = [("2026-04-01", 5000.0)]          # 25,6 % → rød på NIPA-basis
     m = mv.build(f, e, {"value": 255.0, "percentile": 100, "date": "2026-04-01", "quarter": "Q2 2026", "years": 10}, REF)
     s = by(m)
     assert s["int_rev"]["level"] == "red"                  # tallet vises ærligt
@@ -160,3 +160,29 @@ def test_background_signals_never_make_a_theme_red():
     assert m["counts"]["red"] == sum(1 for x in m["signals"] if tm.counted_level(x) == "red" and not x["stale"])
     assert tm.counted_level({"id": "buffett", "level": "red"}) == "yellow"
     assert tm.counted_level({"id": "ccc", "level": "red"}) == "red"
+
+
+def test_live_run_28_oktober_ccc_shock_is_the_swan_not_chip_prices():
+    """Første rigtige kørsel 28/10/2026: CCC 13,45 % (+2,17 pp på en måned), halvlederpriser +26 % år til år,
+    Brent 115 (+90 %). Chipprisernes signal står rødt, men det er CCC-chokket, der udløser sort svane."""
+    f, e = regime_oktober_2026()
+    f["PCU33443344"] = monthly(100.0, 0.0195)                       # ca. +26 % om året
+    m = mv.build(f, e, None, REF)
+    s, th = by(m), {t["id"]: t for t in m["themes"]}
+    assert s["semi_ppi"]["level"] == "red" and th["chips"]["level"] == "yellow"   # baggrund: temaet højst gult
+    assert "Chips og forsyning" not in m["complacency"]["themes"]
+    assert m["red_themes"] == ["energi"] and not m["black_swan"]   # chippriser alene er baggrund
+    f["BAMLH0A3HYC"] = [(d, 11.28 if i < 400 else 13.45) for i, (d, _) in enumerate(flat(0))]
+    m = mv.build(f, e, None, REF)
+    assert by(m)["ccc"]["shock"] and m["black_swan"] and m["headline"].startswith("Sort svane-varsel: Kreditspænd CCC")
+
+
+def test_background_signals_never_turn_the_macro_red_on_their_own():
+    f, e = regime_oktober_2026()
+    f["DCOILBRENTEU"] = flat(70.0)
+    f["PCU33443344"] = monthly(100.0, 0.03)
+    f["A091RC1Q027SBEA"] = [("2026-04-01", 1600.0)]                 # 28,6 % → rød
+    m = mv.build(f, e, None, REF)
+    s = by(m)
+    assert s["semi_ppi"]["level"] == "red" and s["int_rev"]["level"] == "red"
+    assert m["level"] != "red" and m["red_themes"] == [] and not m["black_swan"]

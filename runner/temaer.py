@@ -36,7 +36,7 @@ FRED_EXTRA: tuple[tuple[str, str, int], ...] = (
     ("CPIAUCSL", "Forbrugerpriser (CPI)", 75),
     ("THREEFYTP10", "Terminspræmie 10 år", 21),
     ("A091RC1Q027SBEA", "Statens rentebetalinger", 300),
-    ("W006RC1Q027SBEA", "Statens indtægter", 300),
+    ("FGRECPT", "Statens samlede indtægter (NIPA)", 300),
     ("BAMLH0A3HYC", "Kreditspænd CCC (de svageste lån)", 7),
     ("BAMLC0A4CBBB", "Kreditspænd BBB (laveste investment grade)", 7),
     ("DRTSCILM", "Bankernes lånestandarder (strammere = højere)", 200),
@@ -67,7 +67,8 @@ T = {
     "bei10": (2.6, 3.0),
     "cpi_yoy": (3.5, 5.0),
     "tp10": (0.75, 1.25),
-    "int_rev": (15.0, 20.0),        # rentebetalinger i % af indtægterne
+    "int_rev": (18.0, 24.0),        # NIPA-renter / FGRECPT. Bruttorenterne (NIPA) ligger ca. 1/5 over CBO's nettorenter,
+                                    # så 18/24 svarer til 15/20 % på CBO-basis (CBO 2026: ca. 19 %)
     "ccc": (9.0, 12.0), "ccc_widen30": 1.5,
     "bbb": (1.6, 2.2),
     "lending": (20.0, 40.0),
@@ -105,9 +106,9 @@ THEME_OF = {
 }
 LEVELS = ("green", "yellow", "red")
 DA = {"green": "grøn", "yellow": "gul", "red": "rød"}
-# Langsomme baggrundstal (kvartalsdata): de vises med deres egen farve, men tæller aldrig som rødt – hverken i
+# Langsomme eller strukturelle baggrundstal (værdiansættelse, rentebyrde, chippriser): de vises med deres egen farve, men tæller aldrig som rødt – hverken i
 # vagtens niveau, i sort svane, i temaernes farve eller i "selvtilfredshed". Rødt skal betyde stress nu.
-BACKGROUND = frozenset({"buffett", "int_rev"})
+BACKGROUND = frozenset({"buffett", "int_rev", "semi_ppi"})
 
 
 def counted_level(s: dict) -> str:
@@ -244,11 +245,11 @@ def fred_extra_signals(s: dict[str, list[tuple[str, float]]], ref_day: str) -> l
                         f"{_nf(v, 2)} pp ekstra betaling for at eje lange statsobligationer – stiger, når tilliden til gælden falder",
                         unit="pp", stale=st, rule=f"gul ≥ {T['tp10'][0]:g} · rød ≥ {T['tp10'][1]:g}"))
     di, vi, sti = last("A091RC1Q027SBEA")
-    dr, vr, strr = last("W006RC1Q027SBEA")
+    dr, vr, strr = last("FGRECPT")
     if vi is not None and vr:
         share = vi / vr * 100
         out.append(_sig("int_rev", "Rentebetalinger i % af statens indtægter", share, di, _lvl(share, T["int_rev"]),
-                        f"{_nf(share, 1)} % af indtægterne går til renter ({_nf(vi, 0)} mia. USD om året) – en snebold, der vokser med renten",
+                        f"{_nf(share, 1)} % af statens samlede indtægter går til renter ({_nf(vi, 0)} mia. USD om året, NIPA-brutto) – en snebold, der vokser med renten",
                         unit="%", stale=sti or strr, rule=f"gul ≥ {T['int_rev'][0]:g} % · rød ≥ {T['int_rev'][1]:g} % (langsom: baggrund)"))
     d, v, st = last("BAMLH0A3HYC")
     if v is not None:
@@ -494,5 +495,5 @@ def complacency(signals: list[dict], th: list[dict]) -> dict:
     flag = bool(hot) and calm_mkt
     return {"flag": flag, "themes": [t["label"] for t in hot],
             "text": ("Markedet er roligt, selv om " + ", ".join(t["label"].lower() for t in hot[:3]) + " står rødt. "
-                     "Aktier tæt på toppen og lave kreditspænd betyder, at et chok ikke er prissat – faldet kan komme hurtigt. "
+                     "Aktier tæt på toppen, lav VIX og et lavt bredt kreditspænd (HY) betyder, at et chok ikke er prissat – faldet kan komme hurtigt. "
                      "For planen: hold reserven klar, og jag ikke stigninger.") if flag else ""}

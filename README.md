@@ -6,8 +6,7 @@ investeringsrådgivning.
 
 - **Makrovagt** (`runner/makrovagt.py`): 18 signaler fra FRED og EODHD (VIX, kreditspænd, finansiel stress,
   rentekurve, Sahm-reglen, nye ledige, olie, dollar, krone, guld, aktiefald og dagschok) plus Buffett-indikatoren.
-  Hvert signal er grøn, gul eller rød. Langsomme baggrundstal (Buffett-indikatoren, statens rentebyrde) vises med
-  deres egen farve, men tæller højst som gule.
+  Hvert signal er grøn, gul eller rød. Langsomme baggrundstal (se nedenfor) tæller højst som gule.
 - **Risikotemaer og scenarier** (`runner/temaer.py`): yderligere ca. 27 signaler for netop de risici, der præger nu, i ti
   temaer:
   - renter og inflation (10- og 30-årig rente, realrente, prissatte renteforhøjelser, inflationsforventning, CPI)
@@ -23,7 +22,11 @@ investeringsrådgivning.
 
   Seks scenarier viser, hvilken vej det trækker: blød landing, stagflation, rente- og gældschok, AI-brud, kreditkrise
   og geopolitisk chok. "Selvtilfredshed" markerer røde temaer i et roligt marked. Sort svane-varsel = et chok, eller
-  røde signaler i mindst tre temaer.
+  røde signaler i mindst tre temaer. Buffett-indikatoren, statens rentebyrde og chippriserne er *baggrund*: signalet
+  vises med sin egen farve, men tæller højst som gult – i makrovagtens niveau, i sort svane, i temaets farve og i
+  "selvtilfredshed" – fordi de kan ligge rødt i årevis.
+  Rentebyrden er NIPA-renter divideret med statens samlede indtægter (`FGRECPT`); grænserne 18/24 % svarer til 15/20 %
+  på CBO's nettobasis.
 - **Zonemotor** (`runner/zoner.py` og den identiske `web/zoner.js`): faldet fra toppen for S&P 500, Nasdaq 100,
   OMXS30, OMXC25 og OBX. Hver zone har tre trancher.
 - **Backtest og afspilning**: reglerne er kørt igennem al historik (S&P 500 siden 1960) og uge for uge gennem
