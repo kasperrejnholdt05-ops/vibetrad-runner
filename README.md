@@ -6,7 +6,8 @@ investeringsrådgivning.
 
 - **Makrovagt** (`runner/makrovagt.py`): 18 signaler fra FRED og EODHD (VIX, kreditspænd, finansiel stress,
   rentekurve, Sahm-reglen, nye ledige, olie, dollar, krone, guld, aktiefald og dagschok) plus Buffett-indikatoren.
-  Hvert signal er grøn, gul eller rød. Sort svane-varsel = mindst ét chok eller mindst tre røde.
+  Hvert signal er grøn, gul eller rød. Langsomme baggrundstal (Buffett-indikatoren, statens rentebyrde) vises med
+  deres egen farve, men tæller højst som gule.
 - **Risikotemaer og scenarier** (`runner/temaer.py`): yderligere ca. 27 signaler for netop de risici, der præger nu, i ti
   temaer:
   - renter og inflation (10- og 30-årig rente, realrente, prissatte renteforhøjelser, inflationsforventning, CPI)
@@ -40,6 +41,12 @@ Vibetrad (claude.ai-artifact) regner dine beløb, ordresedler og dine egne aktie
 | Kollaps | over 30 % | over 50 % | 50 % |
 
 En aktie kan også have faste kursniveauer i stedet for procent (fx SpaceX 131–140 / 105–118 / 75–95).
+
+**Planens start (27/10/2026)**
+- Live-status regner fra `PLAN_START` i `runner/zoner.py` (og `web/zoner.js`). Trancher, reglerne ville have udløst
+  før, blev aldrig købt, så de er klar igen. Uden datoen troede motoren, at OMXC25's korrektion og bjørn var købt
+  under Novo-faldet 2024–25, og viste kun en kollaps-alarm.
+- Backtest og afspilning bruger ikke datoen: de viser, hvad reglerne ville have gjort i hele historikken.
 
 **Top og episode**
 - En episode starter ved en ny top. Ny top betyder ny episode, og alle trancher er klar igen.
@@ -75,13 +82,15 @@ kurserne er divideret med 4,13; uden kontrollen ligner det et krak på 85 %.
 - Den kræver kun repo-secrets `EODHD_API_KEY` og `FRED_API_KEY`.
 - Den skriver `results/vagt.json` og `results/vagt_history.json`. Afvises et push, hentes nyeste main, og
   resultatet lægges ind igen (`--merge`), op til 5 forsøg.
-- Exit-kode 1, hvis hverken EODHD eller FRED gav data. Så bliver kørslen rød, og GitHub sender en mail.
+- Exit-kode 1, hvis ingen af de fem markeder gav kurser (fx udløbet EODHD-nøgle). Så bliver kørslen rød, og GitHub
+  sender en mail. Resultatet gemmes alligevel, så Vibetrad viser "0/5 markeder" i stedet for gamle tal.
 
 Lokalt:
 
 ```bash
 python runner/vagt.py --out /tmp/vagt                  # med EODHD_API_KEY og FRED_API_KEY i miljøet
 python runner/vagt.py --offline mappe --out /tmp/vagt  # gemte kurser: mappe/<symbol>.json
+python runner/vagt.py --plan-start 2026-10-27          # planens startdato (standard: PLAN_START)
 python -m pytest -q                                    # alle tests inkl. JavaScript-motoren (kræver node)
 ```
 
@@ -97,3 +106,12 @@ og fixtures bygges igen.
 - **Secrets, der ikke bruges mere:** `ANTHROPIC_API_KEY`, `VT_PORTFOLIO`, `VT_RESULTS_PASSPHRASE`. Ejeren kan slette
   dem under Settings → Secrets and variables → Actions.
 - **Historikken** ligger stadig i git.
+
+## Rettet 28/10/2026
+- **Planens start**: live-status ignorerede, at planen først gælder fra 27/10/2026 (se ovenfor). OMXC25 viste derfor
+  ingen ordre ved korrektion eller bjørn.
+- **Baggrundstal**: statens rentebyrde farvede temaet Statsgæld rødt og kom med i "selvtilfredshed", selv om
+  vagten bevidst ikke tæller den som rød.
+- **Exit-kode**: uden EODHD blev kørslen grøn uden zoner. Nu er den rød, og resultatet gemmes stadig.
+- **Grafen**: sidste dag stod to gange i `chart` for Nasdaq 100, OMXC25 og OBX.
+- **Tests på GitHub** kører nu også, når `web/zoner.js` ændres.

@@ -8,9 +8,14 @@ live med EODHD, når du åbner siden.
     python runner/vagt.py --out /tmp/x    # skriv et andet sted hen
     python runner/vagt.py --offline DIR   # brug gemte kurser (DIR/<symbol>.json) – til test
     python runner/vagt.py --merge FIL     # læg en allerede bygget vagt.json ind igen (efter afvist push)
+    python runner/vagt.py --plan-start D  # anden startdato for planen (ÅÅÅÅ-MM-DD) – til test
 
-Exit-kode 1, hvis hverken EODHD eller FRED gav data (så bliver kørslen rød, og GitHub sender en mail).
-Databrud, huller og forældede kurser stopper aldrig kørslen; de står i ``data`` for hvert marked.
+Exit-kode 1, hvis ingen af de fem markeder gav kurser (fx udløbet EODHD-nøgle): zonerne er vagthundens kerne, så
+kørslen bliver rød, og GitHub sender en mail. Filen skrives og gemmes stadig, så Vibetrad viser "0/5 markeder" i
+stedet for gårsdagens tal. Databrud, huller og forældede kurser stopper aldrig kørslen; de står i ``data``.
+
+Live-status regner fra planens start (``zoner.PLAN_START``, 27/10/2026): trancher, reglerne ville have udløst før,
+blev aldrig købt og er derfor klar igen. Backtest og afspilning viser hele historikken uden den dato.
 """
 from __future__ import annotations
 
@@ -59,7 +64,16 @@ def _r(obj: Any, d: int = 4) -> Any:
     return obj
 
 
-def market_block(m: dict, rows: list[dict], ref_day: str) -> tuple[dict, list[tuple[str, float]]]:
+def chart_points(series: list[tuple[str, float]], days: int = 756, step: int = 5) -> list[list]:
+    """Ugentlige lukkekurser for de seneste ``days`` handelsdage – altid med sidste dag, og aldrig to gange."""
+    pts = [[d, round(c, 2)] for d, c in series[-days::step]]
+    if series and (not pts or pts[-1][0] != series[-1][0]):
+        pts.append([series[-1][0], round(series[-1][1], 2)])
+    return pts
+
+
+def market_block(m: dict, rows: list[dict], ref_day: str,
+                 plan_start: str | None = zn.PLAN_START) -> tuple[dict, list[tuple[str, float]]]:
     series, issues = zn.guard(rows, name=m["name"])
     out: dict[str, Any] = {"id": m["id"], "name": m["name"], "region": m["region"], "symbol": m["symbol"],
                            "data": {"rows": len(series), "from": series[0][0] if series else None,
@@ -71,18 +85,17 @@ def market_block(m: dict, rows: list[dict], ref_day: str) -> tuple[dict, list[tu
     age = (dt.date.fromisoformat(ref_day) - dt.date.fromisoformat(series[-1][0])).days
     if age > 5:
         issues.append({"kind": "forældet", "note": f"seneste kurs er {age} dage gammel ({zn._dmy(series[-1][0])})"})
-    st = zn.analyse(series, kind="index", name=m["name"], symbol=m["symbol"])
+    st = zn.analyse(series, kind="index", name=m["name"], symbol=m["symbol"], arm_from=plan_start)
     bt = zn.backtest(series)
     out.update(ok=True, state=st, backtest={
         "from": bt["from"], "years": bt["years"], "fills": bt["fills"], "by_zone": bt["by_zone"], "by_kind": bt["by_kind"],
         "episodes": [e for e in bt["episodes"] if e["max_dd_pct"] >= 15][-14:], "note": bt["note"]})
-    # 3 års lukkekurser (ugentligt) til grafen på siden
-    out["chart"] = [[d, round(c, 2)] for d, c in series[-756::5]] + ([[series[-1][0], round(series[-1][1], 2)]]
-                                                                      if (len(series) - 1) % 5 else [])
+    out["chart"] = chart_points(series)  # 3 års lukkekurser (ugentligt) til grafen på siden
     return out, series
 
 
-def build(ref_day: str, fetch_eod, fred_client: Any, eod_client: Any, *, generated_at: str) -> dict:
+def build(ref_day: str, fetch_eod, fred_client: Any, eod_client: Any, *, generated_at: str,
+          plan_start: str | None = zn.PLAN_START) -> dict:
     buffett = None
     if fred_client is not None and getattr(fred_client, "available", False):
         try:
@@ -102,7 +115,7 @@ def build(ref_day: str, fetch_eod, fred_client: Any, eod_client: Any, *, generat
             markets.append({"id": m["id"], "name": m["name"], "region": m["region"], "symbol": m["symbol"], "ok": False,
                             "note": f"EODHD-fejl: {type(exc).__name__}"})
             continue
-        blk, series = market_block(m, rows, ref_day)
+        blk, series = market_block(m, rows, ref_day, plan_start)
         markets.append(blk)
         series_by[m["id"]] = series
     replays = []
@@ -121,7 +134,7 @@ def build(ref_day: str, fetch_eod, fred_client: Any, eod_client: Any, *, generat
         "summary": {"macro_level": macro.get("level"), "black_swan": macro.get("black_swan"), "worst_zone": worst,
                     "zones": zones, "markets_ok": len(ok), "markets": len(markets)},
         "macro": macro, "markets": markets, "replays": replays,
-        "rules": {"top_days": zn.TOP_DAYS, "confirm_days": zn.CONFIRM_DAYS, "foundation_days": zn.FOUNDATION_DAYS,
+        "rules": {"plan_start": plan_start, "top_days": zn.TOP_DAYS, "confirm_days": zn.CONFIRM_DAYS, "foundation_days": zn.FOUNDATION_DAYS,
                   "nordnet_limit_pct": zn.NORDNET_LIMIT_PCT, "zones_index": [list(z) for z in zn.ZONES_INDEX],
                   "zones_stock": [list(z) for z in zn.ZONES_STOCK], "zone_weights": zn.ZONE_WEIGHTS},
         "note": "Kun markedsdata (EODHD og FRED). Analyse og regler, ikke rådgivning. Kursindeks uden udbytte.",
@@ -170,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--offline", default=None)
     ap.add_argument("--ref-date", default=None)
     ap.add_argument("--merge", default=None)
+    ap.add_argument("--plan-start", default=zn.PLAN_START)
     a = ap.parse_args(argv)
     if a.merge:
         write(json.loads(Path(a.merge).read_text(encoding="utf-8")), Path(a.out))
@@ -182,7 +196,8 @@ def main(argv: list[str] | None = None) -> int:
         eod_client = eo.EodhdClient() if eo.api_key() else None
         fred_client = fr.FredClient() if os.environ.get(fr.KEY_ENV) else None
     fetch = (lambda s, f, t: eod_client.eod(s, f, t)) if eod_client else (lambda s, f, t: [])
-    doc = build(ref_day, fetch, fred_client, eod_client, generated_at=now.isoformat(timespec="seconds"))
+    doc = build(ref_day, fetch, fred_client, eod_client, generated_at=now.isoformat(timespec="seconds"),
+                plan_start=a.plan_start or None)
     write(doc, Path(a.out))
     s = doc["summary"]
     # Loggen er offentlig: kun status, ingen tal om dig (der er ingen) og ingen nøgler.
@@ -191,7 +206,10 @@ def main(argv: list[str] | None = None) -> int:
     for m in doc["markets"]:
         for i in (m.get("data") or {}).get("issues", []):
             print(f"  data {m['name']}: {i['kind']}")
-    return 0 if s["markets_ok"] or (doc["macro"].get("counts", {}).get("signals", 0) > 0) else 1
+    if not s["markets_ok"]:
+        print("FEJL: ingen markeder gav kurser – tjek EODHD_API_KEY (zonerne kan ikke regnes)")
+        return 1
+    return 0
 
 
 if __name__ == "__main__":

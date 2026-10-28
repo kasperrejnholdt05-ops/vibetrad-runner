@@ -42,3 +42,11 @@ def test_vagt_schedule_secrets_and_push():
     text = (WF / "vagt.yml").read_text("utf-8")
     for gone in ("ANTHROPIC", "VT_PORTFOLIO", "VT_RESULTS_PASSPHRASE", "vibe-trading"):
         assert gone not in text
+
+
+def test_results_are_saved_even_on_a_red_run_and_web_triggers_tests():
+    (job,) = _load("vagt.yml")["jobs"].values()
+    save = next(st for st in job["steps"] if st.get("name") == "Gem resultat")
+    assert save.get("if") == "${{ !cancelled() }}"
+    on = _load("tests.yml").get("on") or _load("tests.yml").get(True)
+    assert "web/**" in on["push"]["paths"] and "runner/**" in on["push"]["paths"]

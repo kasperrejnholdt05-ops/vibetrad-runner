@@ -5,6 +5,8 @@
 (function (root) {
   'use strict';
   const TOP_DAYS = 756, CONFIRM_DAYS = 10, FOUNDATION_DAYS = 20, NORDNET_LIMIT_PCT = 13.0, BREAK_RATIO = 2.0;
+  // Planen gælder fra 27/10/2026: brug PLAN_START som armFrom i live-status (se PLAN_START i runner/zoner.py).
+  const PLAN_START = '2026-10-27';
   const ZONES_INDEX = [['korrektion', 'Korrektion', 10, 20], ['bjorn', 'Bjørnemarked', 20, 30], ['kollaps', 'Kollaps', 30, null]];
   const ZONES_STOCK = [['korrektion', 'Korrektion', 20, 35], ['bjorn', 'Bjørnemarked', 35, 50], ['kollaps', 'Kollaps', 50, null]];
   const ZONE_WEIGHTS = { korrektion: 0.2, bjorn: 0.3, kollaps: 0.5 };
@@ -188,6 +190,6 @@
     return { from: series.length ? series[0][0] : null, to: series.length ? series[series.length - 1][0] : null, years: r(years, 1), fills: rows.length, by_zone: byZone, by_kind: byKind, episodes: eps, note: 'Kursindeks uden udbytte; lukkekurser; ingen kurtage. Fortiden er ingen garanti.' };
   }
 
-  const api = { TOP_DAYS, CONFIRM_DAYS, FOUNDATION_DAYS, NORDNET_LIMIT_PCT, ZONES_INDEX, ZONES_STOCK, ZONE_WEIGHTS, TRANCHE_WEIGHTS, KINDS, KIND_DA, MARKETS, guard, zoneTable, zoneAt, walk, analyse, nextStep, backtest, nf, dmy };
+  const api = { PLAN_START, TOP_DAYS, CONFIRM_DAYS, FOUNDATION_DAYS, NORDNET_LIMIT_PCT, ZONES_INDEX, ZONES_STOCK, ZONE_WEIGHTS, TRANCHE_WEIGHTS, KINDS, KIND_DA, MARKETS, guard, zoneTable, zoneAt, walk, analyse, nextStep, backtest, nf, dmy };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else root.VTZ = api;
 })(typeof window !== 'undefined' ? window : globalThis);

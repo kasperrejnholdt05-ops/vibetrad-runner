@@ -30,6 +30,10 @@ import statistics
 from typing import Any, Iterable
 
 TOP_DAYS = 756            # ca. 3 år
+# Planen gælder fra Kaspers beslutning 27/10/2026. Trancher, motoren "udløser" før, blev aldrig købt (fx OMXC25's
+# korrektion og bjørn under Novo-faldet 2024–25), så live-status skal regne dem som klar igen (``arm_from``).
+# Backtest og afspilning bruger ikke datoen: de viser, hvad reglerne ville have gjort i hele historikken.
+PLAN_START = "2026-10-27"
 CONFIRM_DAYS = 10
 FOUNDATION_DAYS = 20
 NORDNET_LIMIT_PCT = 13.0

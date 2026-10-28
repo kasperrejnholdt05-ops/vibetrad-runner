@@ -105,6 +105,14 @@ THEME_OF = {
 }
 LEVELS = ("green", "yellow", "red")
 DA = {"green": "grøn", "yellow": "gul", "red": "rød"}
+# Langsomme baggrundstal (kvartalsdata): de vises med deres egen farve, men tæller aldrig som rødt – hverken i
+# vagtens niveau, i sort svane, i temaernes farve eller i "selvtilfredshed". Rødt skal betyde stress nu.
+BACKGROUND = frozenset({"buffett", "int_rev"})
+
+
+def counted_level(s: dict) -> str:
+    """Den farve, signalet tæller med i vagten: baggrundstal højst gule."""
+    return "yellow" if s["id"] in BACKGROUND and s["level"] == "red" else s["level"]
 
 
 def theme_of(sid: str) -> str:
@@ -466,10 +474,11 @@ def themes(signals: list[dict]) -> list[dict]:
     out = []
     for tid, label, q in THEMES:
         sig = [s for s in signals if s.get("theme") == tid and not s.get("stale")]
-        lv = max([s["level"] for s in sig] or ["green"], key=LEVELS.index)
+        lv = max([counted_level(s) for s in sig] or ["green"], key=LEVELS.index)
         bad = [s for s in sig if s["level"] != "green"]
         out.append({"id": tid, "label": label, "question": q, "level": lv, "shock": any(s["shock"] for s in sig),
-                    "signals": len(sig), "red": sum(s["level"] == "red" for s in sig), "yellow": sum(s["level"] == "yellow" for s in sig),
+                    "signals": len(sig), "red": sum(counted_level(s) == "red" for s in sig),
+                    "yellow": sum(counted_level(s) == "yellow" for s in sig),
                     "top": [s["label"] for s in sorted(bad, key=lambda s: -LEVELS.index(s["level"]))[:3]]})
     return out
 

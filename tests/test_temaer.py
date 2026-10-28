@@ -143,3 +143,20 @@ def test_missing_new_data_never_breaks_the_old_watch():
         e.pop(k, None)
     m = mv.build(f, e, None, REF)
     assert m["themes"] and m["scenarios"] and m["level"] in ("green", "yellow", "red")
+
+
+def test_background_signals_never_make_a_theme_red():
+    """Statens rentebyrde (kvartalsdata) må gerne stå rødt som tal, men temaet, svanen og selvtilfredsheden er
+    stress nu: før 28/10/2026 farvede den Statsgæld rødt og kom med i "selvtilfredshed"."""
+    f, e = regime_oktober_2026()
+    f["A091RC1Q027SBEA"] = [("2026-04-01", 1280.0)]
+    f["W006RC1Q027SBEA"] = [("2026-04-01", 3815.0)]  # 33,6 % som i den rigtige kørsel
+    m = mv.build(f, e, {"value": 255.0, "percentile": 100, "date": "2026-04-01", "quarter": "Q2 2026", "years": 10}, REF)
+    s = by(m)
+    assert s["int_rev"]["level"] == "red"                  # tallet vises ærligt
+    th = {t["id"]: t for t in m["themes"]}
+    assert th["gaeld"]["level"] == "yellow" and th["gaeld"]["red"] == 0
+    assert "gaeld" not in m["red_themes"] and "Statsgæld" not in m["complacency"]["themes"]
+    assert m["counts"]["red"] == sum(1 for x in m["signals"] if tm.counted_level(x) == "red" and not x["stale"])
+    assert tm.counted_level({"id": "buffett", "level": "red"}) == "yellow"
+    assert tm.counted_level({"id": "ccc", "level": "red"}) == "red"

@@ -86,3 +86,67 @@ def test_stale_prices_are_flagged(tmp_path):
     assert rc == 0
     doc = json.loads((tmp_path / "out" / "vagt.json").read_text("utf-8"))
     assert any(i["kind"] == "forældet" for i in doc["markets"][0]["data"]["issues"])
+
+
+def _old_drawdown_prices(folder: Path) -> None:
+    """Top, fald på 28 % (bjørn) og delvis genopretning – alt før planens start, og ingen ny top siden (som OMXC25)."""
+    folder.mkdir(parents=True, exist_ok=True)
+    v = mk.path([(0, 80), (300, 100), (420, 72), (899, 94)])
+    days = mk.days(len(v), "2022-01-03")
+    for sym in ("GSPC.INDX", "NDX.INDX", "OMXS30.INDX", "OMXC25.INDX", "OBX.OL"):
+        (folder / f"{sym}.json").write_text(json.dumps([{"date": d, "close": p} for d, p in zip(days, v)]), "utf-8")
+
+
+def test_tranches_before_the_plan_started_are_ready_again(tmp_path):
+    """OMXC25-fejlen 28/10/2026: fald fra før planen talte som købt, så kun kollaps-alarmen var tilbage."""
+    _old_drawdown_prices(tmp_path / "px")
+    off = vagt.OfflineEod(str(tmp_path / "px"))
+    ref = "2025-06-16"
+
+    def run(plan_start):
+        doc = vagt.build(ref, off.eod, None, off, generated_at=ref + "T18:00:00+02:00", plan_start=plan_start)
+        return next(m for m in doc["markets"] if m["id"] == "omxc25")["state"], doc
+
+    old, _ = run(None)  # uden startdato: den gamle fejl kan genskabes
+    used = {(t["zone"], t["kind"]) for t in old["tranches"] if t["status"] in ("ny", "udløst")}
+    assert ("bjorn", "liggende") in used and old["next"]["type"] == "alarm"
+    st, doc = run(vagt.zn.PLAN_START)
+    assert doc["rules"]["plan_start"] == vagt.zn.PLAN_START and st["arm_from"] == vagt.zn.PLAN_START
+    assert not [t for t in st["tranches"] if t["status"] in ("ny", "udløst")]
+    lig = {t["zone"]: t for t in st["tranches"] if t["kind"] == "liggende"}
+    assert all(t["status"] == "venter" for t in lig.values())
+    assert st["next"]["type"] == "ordre" and "korrektion" in st["next"]["text"]
+    assert 0 < lig["korrektion"]["distance_pct"] < 13
+    # Backtesten viser stadig hele historikken (faldet er med)
+    m = next(m for m in doc["markets"] if m["id"] == "omxc25")
+    assert m["backtest"]["fills"] >= 3
+
+
+def test_default_run_uses_the_plan_start(tmp_path):
+    _old_drawdown_prices(tmp_path / "px")
+    rc = vagt.main(["--offline", str(tmp_path / "px"), "--out", str(tmp_path / "out"), "--ref-date", "2025-06-16"])
+    assert rc == 0
+    doc = json.loads((tmp_path / "out" / "vagt.json").read_text("utf-8"))
+    assert all(m["state"]["arm_from"] == vagt.zn.PLAN_START for m in doc["markets"])
+
+
+def test_chart_has_last_day_once_for_every_length():
+    for n in range(1, 1600, 37):
+        s = [(f"d{i:05d}", float(i + 1)) for i in range(n)]
+        pts = vagt.chart_points(s)
+        dates = [p[0] for p in pts]
+        assert len(dates) == len(set(dates)), n
+        assert dates[-1] == s[-1][0] and dates == sorted(dates)
+        assert len(pts) <= 756 // 5 + 2
+    assert vagt.chart_points([]) == []
+
+
+def test_no_markets_is_a_red_run_but_the_file_is_still_written(tmp_path, monkeypatch):
+    """Udløbet EODHD-nøgle: FRED virker, men ingen zoner. Før blev kørslen grøn og tav."""
+    monkeypatch.setenv("FRED_API_KEY", "x" * 32)
+    monkeypatch.setattr(vagt.fr, "FredClient", lambda: FakeFred())
+    monkeypatch.setattr(vagt.eo, "api_key", lambda: "")
+    rc = vagt.main(["--out", str(tmp_path / "out"), "--ref-date", "2025-05-12"])
+    assert rc == 1
+    doc = json.loads((tmp_path / "out" / "vagt.json").read_text("utf-8"))
+    assert doc["summary"]["markets_ok"] == 0 and doc["macro"]["counts"]["signals"] >= 1

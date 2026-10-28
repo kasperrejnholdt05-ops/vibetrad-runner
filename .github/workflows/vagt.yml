@@ -43,7 +43,10 @@ jobs:
           FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
         run: python runner/vagt.py --out results
 
+      # Gemmes også, når vagthunden melder fejl (fx ingen markeder): så viser Vibetrad den ærlige status, og kørslen
+      # er stadig rød, så GitHub sender en mail. Ikke ved annullering.
       - name: Gem resultat
+        if: ${{ !cancelled() }}
         env:
           GH_PUSH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
