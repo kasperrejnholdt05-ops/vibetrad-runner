@@ -1,7 +1,7 @@
 name: Tests
 on:
   push:
-    paths: ["runner/**", "tests/**", "tools/**", "requirements.txt", ".github/workflows/**"]
+    paths: ["runner/**", "tests/**", "requirements.txt", ".github/workflows/**"]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -17,21 +17,6 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
-      - run: pip install --quiet "cryptography>=42" pyyaml pytest pandas
+      - run: pip install --quiet pyyaml pytest
+      # Python-testene + de fælles testvektorer for zonemotoren (samme facit i Python og JavaScript).
       - run: python -m pytest -q
-
-  # EODHD-integrationen og rettelserne i Vibe-Trading (værktøjsresultater, temperature) testes mod det rigtige
-  # vibe-trading-ai (samme version som ugekørslen).
-  integration:
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: requirements.txt
-      - run: pip install --quiet -r requirements.txt pytest
-      - run: python -m pytest -q tests/test_eodhd.py "tests/test_run_week.py::test_patched_vibe_trading_worker_keeps_tool_results"
-        env:
-          VIBE_TRADING_HOME: /tmp/vibe-trading

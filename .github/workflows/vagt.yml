@@ -1,0 +1,67 @@
+name: Vibetrad vagthund
+
+# Makrovagt + zonemotor for S&P 500, Nasdaq 100, OMXS30, OMXC25 og OBX (runner/vagt.py).
+# Ingen LLM, ingen porteføljedata, ingen API-kredit: kun EODHD og FRED. Skriver results/vagt.json
+# (offentlig, kun markedsdata) og results/vagt_history.json. Vibetrad henter filen via synkroniseringen.
+# Tider (UTC, hverdage): 06:17 (morgen, efter lukning i USA), 16:53 (efter lukning i Norden),
+# 21:23 (efter lukning i USA). GitHub-cron kan være forsinket; skæve minutter giver færre forsinkelser.
+on:
+  schedule:
+    - cron: "17 6 * * 1-5"
+    - cron: "53 16 * * 1-5"
+    - cron: "23 21 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vagt
+  cancel-in-progress: false
+
+jobs:
+  vagt:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      PYTHONUNBUFFERED: "1"
+      TZ: Europe/Stockholm
+    steps:
+      # persist-credentials: false → tokenet ligger ikke i .git/config, mens koden kører.
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Kør vagthunden
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: python runner/vagt.py --out results
+
+      - name: Gem resultat
+        env:
+          GH_PUSH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "vibetrad-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          cp results/vagt.json "$RUNNER_TEMP/vagt.json"
+          git add results/vagt.json results/vagt_history.json
+          git commit -q -m "Vagt $(date +%d/%m/%Y\ %H:%M)" || exit 0
+          # Er main ændret imens, afvises push: start fra nyeste main og læg resultatet ind igen (op til 5 forsøg).
+          for i in 1 2 3 4 5; do
+            git push -q origin HEAD:main && exit 0
+            echo "Push afvist (forsøg $i af 5) – henter nyeste main"
+            sleep $((i * 5))
+            git fetch -q origin main
+            git reset -q --hard origin/main
+            python3 runner/vagt.py --out results --merge "$RUNNER_TEMP/vagt.json" || exit 1
+            git add results/vagt.json results/vagt_history.json
+            git commit -q -m "Vagt $(date +%d/%m/%Y\ %H:%M)" || exit 0
+          done
+          exit 1

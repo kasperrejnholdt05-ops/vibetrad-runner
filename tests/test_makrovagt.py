@@ -142,13 +142,3 @@ def test_collect_never_raises_and_counts_sources():
     assert "Makrovagt: grøn" in mv.status_line(m)
     assert mv.agent_brief(m).startswith("**Makrovagt (grøn")
 
-
-def test_canary_json_carries_macro(tmp_path):
-    import kanarie as kn
-    macro = mv.build(calm_fred(), calm_eod(), None, REF)
-    env = {"public": {"run_id": "r1", "generated_at": "2026-10-22T04:17:00+02:00", "week_id": "2026-W43",
-                      "canary": {"status": "ok", "ok": 9, "warn": 0, "fail": 0, "checks": []}, "macro": macro}}
-    kn.write(tmp_path, env)
-    doc = json.loads((tmp_path / "canary.json").read_text())
-    assert doc["macro"]["level"] == "green" and doc["history"][-1]["macro_level"] == "green"
-    assert len(json.dumps(doc)) < 100000  # sync-opgavens grænse

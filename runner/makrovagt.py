@@ -1,7 +1,6 @@
-"""Makrovagt: kanariefuglens vagthund for markeder og økonomi (ingen LLM, ingen porteføljedata).
+"""Makrovagt: vagthundens øjne på markeder og økonomi (ingen LLM, ingen porteføljedata).
 
-Kanariefuglen tjekker hver nat (og igen om eftermiddagen), at kæden virker. Makrovagten bruger de samme
-nøgler til at kigge efter stress, før den når porteføljen: frygt (VIX), kreditspænd, finansiel stress,
+Makrovagten kigger efter stress, før den rammer aktiemarkederne: frygt (VIX), kreditspænd, finansiel stress,
 rentekurve, arbejdsmarked (Sahm-reglen, nye ledige), aktiefald og dagschok, olie, dollar, krone og guld –
 plus Buffett-indikatoren som baggrund for, hvor hårdt et fald kan blive.
 
@@ -10,12 +9,12 @@ eller et dagsfald på 3 %). Sort svane-varsel = mindst ét chok eller mindst tre
 Sorte svaner kan ikke forudsiges; vagthunden kan kun opdage stressen tidligt, mens der er tid til at tænke.
 
 Grænserne er den følsomme profil (Kasper 23/10/2026: "tidlig og følsom"): hellere en gul for meget end en
-rød for sent. Resultatet ligger offentligt i results/canary.json (kun markedsdata) og vises øverst på I dag.
+rød for sent. Resultatet ligger offentligt i results/vagt.json (kun markedsdata) og vises øverst på Vagt.
 """
 from __future__ import annotations
 
 import datetime as dt
-from typing import Any, Callable
+from typing import Any
 
 PROFILE = "følsom"
 
@@ -305,15 +304,15 @@ def buffett_signal(b: dict | None) -> dict | None:
 
 # ---------------------------------------------------------------------------
 PLAN = {
-    "green": "Ingen tegn på makrostress. Følg din plan: køb efter målporteføljen og rebalancér kvartalsvis.",
-    "yellow": ("Hold øje. Din plan kræver ingen handling: dit mandat tåler fald på op til 50 %. Del gerne nye køb op "
-               "over et par uger i stedet for alt på én dag, og tjek at hver position har tese og kill-kriterie (Plan)."),
-    "red": ("Alvorlig stress. Sælg ikke i panik – dit mandat tåler fald på op til 50 % uden salg. Gå i dag dine kill-"
-            "kriterier igennem under Plan → Beslutningslog, køb kun kernen (brede fonde) og kun i mindre portioner, og "
-            "vent med nye enkeltaktier, til signalerne falder."),
-    "swan": ("Sort svane-varsel: noget usædvanligt sker hurtigt. Stop op i dag: gennemgå Plan → Mine regler og dine "
-             "kill-kriterier, og læg ingen nye ordrer i enkeltaktier, før du har gjort det. Dit mandat tåler −50 %: "
-             "det vigtigste er ikke at sælge i panik på bunden."),
+    "green": ("Ingen tegn på makrostress. Følg planen: halvdelen af indskuddet til kernen, halvdelen til reserven. "
+              "Reserven bruges kun, når en zone udløser en tranche."),
+    "yellow": ("Hold øje. Tjek Zoner: ligger de liggende ordrer klar (eller kursalarmerne, hvor Nordnet ikke tager "
+               "ordren endnu)? Køb kun det, en udløst tranche siger – aldrig mere."),
+    "red": ("Alvorlig stress. Følg trancherne og intet andet: én tranche ad gangen, aldrig hele reserven på én dag. "
+            "Sælg ikke i panik – kun aktier med et ramt kill-kriterie sælges."),
+    "swan": ("Sort svane-varsel: noget usædvanligt sker hurtigt. Stop op i dag: læs Log og regler, og handl kun "
+             "efter de trancher, zonerne udløser. Alt andet venter 24 timer, og sælg ikke i panik. Bunden kommer "
+             "sjældent ved første signal."),
 }
 
 

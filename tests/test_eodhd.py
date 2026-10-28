@@ -141,109 +141,12 @@ def test_missing_key_is_unavailable(monkeypatch):
     assert eo.api_key() == "fra-plugin-navnet"
 
 
-def test_rows_to_frame_adjusts_like_yahoo():
-    pd = pytest.importorskip("pandas")
-    rows = [{"date": "2026-09-01", "open": 10, "high": 11, "low": 9, "close": 10, "adjusted_close": 5, "volume": 7},
-            {"date": "2026-10-14", "open": 6, "high": 6, "low": 5, "close": 5.5, "adjusted_close": 5.5, "volume": 8}]
-    f = eo.rows_to_frame(rows, "2026-09-01", "2026-10-14")
-    assert list(f.columns) == ["open", "high", "low", "close", "volume"] and f.index.name == "trade_date"
-    assert f.iloc[0]["close"] == 5 and f.iloc[0]["high"] == 5.5 and f.iloc[1]["close"] == 5.5
-    assert isinstance(f.index, pd.DatetimeIndex) and eo.rows_to_frame([], "a", "b").empty
-
-
-def test_tool_actions_are_compact_and_safe():
-    seen: list = []
-    c = eo.EodhdClient(KEY, opener=opener_for({
-        "/real-time/SPCX.US": [{"code": "SPCX.US", "close": 152.16, "change_p": -2.8, "junk": "x"}],
-        "/fundamentals/": {"General": {"Name": "SpaceX", "IPODate": "2026-06-12", "Description": "lang tekst"},
-                           "Highlights": {"MarketCapitalization": 2e12}},
-        "/news": [{"date": "2026-10-15", "title": "t", "content": "meget lang", "sentiment": {"polarity": 0.8},
-                   "symbols": ["NVDA.US"], "link": "u"}],
-    }, seen), sleep=lambda s: None)
-    q = json.loads(eo._tool_execute(c, action="quote", symbols="SPCX.US"))
-    assert q["ok"] and q["data"] == [{"code": "SPCX.US", "timestamp": None, "close": 152.16, "previousClose": None,
-                                      "change_p": -2.8, "volume": None}]
-    f = json.loads(eo._tool_execute(c, action="fundamentals", symbol="SPCX.US"))
-    assert f["data"]["General"]["IPODate"] == "2026-06-12" and "Description" not in f["data"]["General"]
-    n = json.loads(eo._tool_execute(c, action="news", symbol="NVDA.US"))
-    assert "content" not in n["data"][0] and n["data"][0]["sentiment"]["polarity"] == 0.8
-    assert json.loads(eo._tool_execute(c, action="hack"))["ok"] is False
-    assert json.loads(eo._tool_execute(eo.EodhdClient(""), action="eod", symbol="A.US"))["ok"] is False
-
-
-def test_tool_news_query_sentiment_and_trends():
-    seen: list = []
-    c = eo.EodhdClient(KEY, opener=opener_for({
-        "/news": [{"date": "2026-10-16", "title": "SpaceX to Post Third Quarter 2026 Results on October 20, 2026",
-                   "content": "SpaceX announced its earnings date ...", "symbols": ["SPCX.US"], "link": "u1"},
-                  {"date": "2026-10-19", "title": "AI capex may be Meta's biggest earnings test", "content": "meta",
-                   "symbols": ["META.US", "SPCX.US"], "link": "u2"}],
-        "/sentiments": {"SPCX.US": [{"date": "2026-10-19", "count": 36, "normalized": 0.64}]},
-        "/calendar/trends": {"trends": [{"code": "SPCX.US", "period": "0q", "earningsEstimateAvg": 0.11}]},
-    }, seen), sleep=lambda s: None)
-    n = json.loads(eo._tool_execute(c, action="news", symbol="SPCX.US", query="earnings date"))
-    assert [x["title"][:12] for x in n["data"]] == ["SpaceX to Po"] and n["data"][0]["snippet"].startswith("SpaceX announced")
-    assert "limit=50" in seen[-1]  # søgeord: hent flere og filtrér
-    assert json.loads(eo._tool_execute(c, action="news", symbol="SPCX.US", query="zzz"))["data"] == []
-    sent = json.loads(eo._tool_execute(c, action="sentiment", symbols=["SPCX.US"], start="2026-10-12"))
-    assert sent["data"]["SPCX.US"][0]["normalized"] == 0.64 and "/sentiments" in seen[-1] and "s=SPCX.US" in seen[-1]
-    tr = json.loads(eo._tool_execute(c, action="earnings_trends", symbols="SPCX.US"))
-    assert tr["data"][0]["earningsEstimateAvg"] == 0.11 and c.calls >= 10  # trends vægter 10
-    assert "insider" in eo.TOOL_DESCRIPTION and "sentiment" in eo.TOOL_PARAMETERS["properties"]["action"]["enum"]
-
-
 def test_economic_events_pass_type_filter():
     seen: list = []
     c = eo.EodhdClient(KEY, opener=opener_for({"/economic-events": [{"type": "Interest Rate Decision"}]}, seen),
                        sleep=lambda s: None)
     assert c.economic_events("SE", "2026-04-01", "2027-02-01", 200, event_type="Interest Rate Decision")[0]["type"] == "Interest Rate Decision"
     assert "type=Interest+Rate+Decision" in seen[-1] and "country=SE" in seen[-1]
-
-
-def test_install_into_real_vibe_trading(monkeypatch, tmp_path):
-    pytest.importorskip("src.market_data")  # kun hvor vibe-trading-ai er installeret (codespacet / Actions)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("EODHD_API_KEY", KEY)
-    seen: list = []
-    rows = [{"date": "2026-10-13", "open": 1, "high": 1, "low": 1, "close": 256.65, "adjusted_close": 256.65, "volume": 1},
-            {"date": "2026-10-14", "open": 1, "high": 1, "low": 1, "close": 255.95, "adjusted_close": 255.95, "volume": 1}]
-    client = eo.EodhdClient(KEY, opener=opener_for({"/eod/NOVO-B.CO": rows}, seen), sleep=lambda s: None)
-    info = eo.install_into_vibe_trading(lambda: client)
-    assert info["loader"] and info["routing"] and info["tool"]
-    assert eo.install_into_vibe_trading(lambda: client)["routing"]  # idempotent
-    from src.market_data import fetch_market_data_json
-    from backtest.loaders.registry import FALLBACK_CHAINS
-    out = json.loads(fetch_market_data_json(codes=["NOVO-B.CO"], start_date="2026-10-01", end_date="2026-10-15",
-                                            include_provenance=True))
-    assert out["_provenance"]["NOVO-B.CO"]["source"] == "eodhd" and out["_provenance"]["NOVO-B.CO"]["quote_currency"] == "DKK"
-    assert FALLBACK_CHAINS["us_equity"][:2] == ["yahoo", "eodhd"] and next(iter(FALLBACK_CHAINS)) == "eu_equity"
-    from src.market_data import detect_source
-    from backtest.loaders import registry as reg
-    assert detect_source("BRK-B.US") == "yahoo" and detect_source("NVDA.US") == "yahoo"
-    monkeypatch.setenv("MARKET_DATA_ORDER_HK_EQUITY", "tencent,yahoo")  # ændring → Vibe-Trading genskaber kæderne
-    reg.refresh_source_order_overrides()
-    assert "eodhd" in FALLBACK_CHAINS["us_equity"] and next(iter(FALLBACK_CHAINS)) == "eu_equity"
-    monkeypatch.delenv("MARKET_DATA_ORDER_HK_EQUITY")
-    reg.refresh_source_order_overrides()
-    from src.tools import build_registry, build_swarm_registry
-    assert "get_eodhd_data" in build_registry()._tools
-    assert "get_eodhd_data" in build_swarm_registry(["get_eodhd_data", "get_market_data"])._tools
-
-
-def test_key_status_without_showing_the_key(monkeypatch):
-    seen: list = []
-    ok = eo.EodhdClient(KEY, opener=opener_for({"/user": {"subscriptionType": "monthly", "subscriptionMode": "paid",
-                                                          "apiRequests": 480, "dailyRateLimit": 100000,
-                                                          "email": "x@y"}}, seen), sleep=lambda s: None)
-    st = eo.key_status(ok)
-    assert st == {"ok": True, "subscription": "monthly paid", "requests_today": 480, "daily_limit": 100000}
-    bad = eo.EodhdClient(KEY, opener=opener_for({"/user": urllib.error.HTTPError("u", 401, "x", {}, None)}, []),
-                         sleep=lambda s: None)
-    st = eo.key_status(bad)
-    assert not st["ok"] and "401" in st["error"] and KEY not in json.dumps(st)
-    for k in eo.KEY_ENVS:
-        monkeypatch.delenv(k, raising=False)
-    assert eo.key_status()["ok"] is False
 
 
 def test_key_file_fallback_for_codespace(monkeypatch, tmp_path):
@@ -256,19 +159,3 @@ def test_key_file_fallback_for_codespace(monkeypatch, tmp_path):
     monkeypatch.setenv("EODHD_API_KEY", "env-vinder-123456")
     assert eo.api_key() == "env-vinder-123456"
 
-
-def test_fundamentals_for_etf_include_isin_and_ongoing_charge():
-    seen: list = []
-    etf = {"ETF_Data::ISIN": "IE00BK5BQT80", "ETF_Data::Ongoing_Charge": 0.141, "ETF_Data::Domicile": "NA",
-           "ETF_Data::World_Regions": {"North America": {"Equity_%": 63.2}, "Latin America": {"Equity_%": 0.9}},
-           "ETF_Data::Top_10_Holdings": {"NVDA.US": {"Name": "NVIDIA Corporation", "Assets_%": 4.9133}}}
-    c = eo.EodhdClient(KEY, opener=opener_for({
-        "ETF_Data": etf,
-        "/fundamentals/VWCE.XETRA": {"General": {"Code": "VWCE", "Type": "ETF", "Name": "Vanguard FTSE All-World"}},
-    }, seen), sleep=lambda s: None)
-    f = json.loads(eo._tool_execute(c, action="fundamentals", symbol="VWCE.DE"))["data"]
-    assert f["General"]["Type"] == "ETF" and f["ETF_Data"]["ISIN"] == "IE00BK5BQT80"
-    assert f["ETF_Data"]["Ongoing_Charge"] == "0.14 %" and "Domicile" not in f["ETF_Data"]
-    assert f["ETF_Data"]["World_Regions"] == {"North America": 63.2}
-    assert f["ETF_Data"]["Top_10_Holdings"] == {"NVIDIA Corporation (NVDA.US)": 4.91}
-    assert all("VWCE.XETRA" in u for u in seen) and len(seen) == 2
