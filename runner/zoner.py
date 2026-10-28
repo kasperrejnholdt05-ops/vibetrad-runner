@@ -241,12 +241,12 @@ def _fill(series: list[tuple[str, float]], i: int, z: dict, kind: str, price: fl
 
 def analyse(series: list[tuple[str, float]], *, kind: str = "index", levels: list[dict] | None = None,
             name: str = "", symbol: str = "", nordnet_limit_pct: float = NORDNET_LIMIT_PCT,
-            recent_days: int = 5, arm_from: str | None = None) -> dict:
+            recent_days: int = 5, arm_from: str | None = None, top_days: int = TOP_DAYS) -> dict:
     """Status på sidste dag: zone, fald, bund, alle ni trancher med status og næste skridt."""
     zones = ZONES_STOCK if kind == "stock" else ZONES_INDEX
     if len(series) < CONFIRM_DAYS + 2:
         return {"symbol": symbol, "name": name, "kind": kind, "ok": False, "note": "for få kurser"}
-    w = walk(series, zones=zones, levels=levels, arm_from=arm_from)
+    w = walk(series, zones=zones, levels=levels, arm_from=arm_from, top_days=top_days)
     ep = w["episode"]
     closes = [c for _, c in series]
     i = len(series) - 1
@@ -337,7 +337,7 @@ def _fwd(closes: list[float], i: int, days: int) -> float | None:
 
 
 def backtest(series: list[tuple[str, float]], *, kind: str = "index", levels: list[dict] | None = None,
-             warmup_days: int = 252) -> dict:
+             warmup_days: int = 252, top_days: int = TOP_DAYS) -> dict:
     """Alle trancher, motoren ville have udløst i historikken, og hvad der skete bagefter.
 
     For hver udløst tranche: afkast efter 1 og 3 år og det yderligere fald, før kursen var tilbage på
@@ -345,7 +345,7 @@ def backtest(series: list[tuple[str, float]], *, kind: str = "index", levels: li
     (zonevægte 20/30/50, trancher 1/3 hver). Kursindeks uden udbytte: afkastet er lidt for lavt.
     """
     zones = ZONES_STOCK if kind == "stock" else ZONES_INDEX
-    w = walk(series, zones=zones, levels=levels, start=min(warmup_days, max(len(series) - 1, 0)))
+    w = walk(series, zones=zones, levels=levels, start=min(warmup_days, max(len(series) - 1, 0)), top_days=top_days)
     closes = [c for _, c in series]
     rows = []
     for f in w["fills"]:

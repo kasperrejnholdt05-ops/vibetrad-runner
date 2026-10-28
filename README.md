@@ -97,6 +97,21 @@ python runner/vagt.py --plan-start 2026-10-27          # planens startdato (stan
 python -m pytest -q                                    # alle tests inkl. JavaScript-motoren (kræver node)
 ```
 
+## Bevis for reglerne (Vibetrad analyse)
+`.github/workflows/analyse.yml` kører `runner/analyse.py` på knaptryk (Actions → Vibetrad analyse → Run workflow),
+kun med læseadgang. Resultatet står i loggen.
+- **Sort svane**: makrovagten genberegnes uge for uge siden 2007 på data, som de så ud den dag. For hver regel
+  (`tre_temaer`, `frisk`, `kun_chok`) måles:
+  - hvor stor en del af ugerne varslet er tændt, og hvor længe ad gangen
+  - hvor ofte S&P 500 faldt mindst 10 % inden for 3 måneder efter et varsel
+  - om varslet kom tidligt i de store fald (fra 3 måneder før toppen, til faldet når 10 %)
+- **Top-alder**: zonerne backtestes med en top på højst 3 år, 2 år og 1 år. Målt pr. variant:
+  - "tidlige køb": trancher, mens indekset er under 5 % fra sit seneste års top
+  - afkast efter 1 og 3 år
+  - hvor mange dybe fald der blev købt
+
+Reglen for sort svane vælges med `SWAN_RULE` i `runner/makrovagt.py`.
+
 ## Samme facit i Python og JavaScript
 `tests/fixtures/zoner_cases.json` bygges af `tests/make_zoner_fixtures.py` ud fra Python-motoren.
 `tests/zoner_js_check.mjs` kører `web/zoner.js` på de samme tilfælde. Ændres reglerne, skal begge filer ændres,

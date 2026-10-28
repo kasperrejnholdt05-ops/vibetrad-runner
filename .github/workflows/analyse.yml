@@ -1,0 +1,36 @@
+name: Vibetrad analyse
+
+# Bevis for reglerne på den rigtige historik (runner/analyse.py): sort svane-reglerne uge for uge siden 2007 og
+# zonernes top-alder på alle fem indeks. Kun på knaptryk, kun læseadgang, ingen LLM og ingen porteføljedata.
+# Resultatet står i loggen (opsummering + JSON mellem ANALYSE_JSON_START og ANALYSE_JSON_END).
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: analyse
+  cancel-in-progress: true
+
+jobs:
+  analyse:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      PYTHONUNBUFFERED: "1"
+      TZ: Europe/Stockholm
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Kør analysen
+        env:
+          EODHD_API_KEY: ${{ secrets.EODHD_API_KEY }}
+          FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        run: python runner/analyse.py --out "$RUNNER_TEMP/analyse.json"

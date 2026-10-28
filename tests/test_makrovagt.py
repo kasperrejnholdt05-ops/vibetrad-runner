@@ -144,4 +144,7 @@ def test_collect_never_raises_and_counts_sources():
     assert mv.collect(REF, None, None)["counts"]["signals"] == 0
     assert "Makrovagt: grøn" in mv.status_line(m)
     assert mv.agent_brief(m).startswith("**Makrovagt (grøn")
+    # "frisk"-reglen får farverne fra 30 dage før med; uden data er fortiden ukendt
+    assert m["swan_rule"] == mv.SWAN_RULE and isinstance(m["fresh_reds"], list)
+    assert mv.collect(REF, None, None)["fresh_reds"] is None
 

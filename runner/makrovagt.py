@@ -325,8 +325,20 @@ PLAN = {
 }
 
 
-def build(series: dict[str, list[tuple[str, float]]], eod_rows: dict[str, list[dict]], buffett: dict | None,
-          ref_day: str, *, generated_at: str | None = None, sources_ok: dict | None = None) -> dict:
+# Sort svane-regler (vælges med SWAN_RULE; runner/analyse.py måler dem på historikken):
+# - "tre_temaer": et chok, eller røde signaler i mindst tre temaer.
+# - "frisk": et chok, eller røde signaler i mindst tre temaer, hvor mindst ét af de røde er blevet rødt inden for de
+#   seneste SWAN_FRESH_DAYS dage. Røde temaer, der har ligget fast i en måned, er stadig rødt niveau, men ikke "noget
+#   usædvanligt, der sker hurtigt" – det er det, sort svane skal betyde.
+# - "kun_chok": kun hurtige bevægelser.
+SWAN_RULES = ("tre_temaer", "frisk", "kun_chok")
+SWAN_RULE = "tre_temaer"
+SWAN_FRESH_DAYS = 30
+
+
+def all_signals(series: dict[str, list[tuple[str, float]]], eod_rows: dict[str, list[dict]], buffett: dict | None,
+                ref_day: str) -> list[dict]:
+    """Alle signaler (makro + temaer) på ``ref_day`` med tema sat."""
     sig = fred_signals(series, ref_day)
     if not any(s["id"] == "vix" for s in sig):
         sig += vix_from_eod(eod_rows, ref_day)
@@ -337,23 +349,63 @@ def build(series: dict[str, list[tuple[str, float]]], eod_rows: dict[str, list[d
     sig += tm.fred_extra_signals(series, ref_day) + tm.eod_extra_signals(eod_rows, ref_day)
     for s_ in sig:
         s_.setdefault("theme", tm.theme_of(s_["id"]))
+    return sig
+
+
+def truncate(series: dict[str, list[tuple[str, float]]], eod_rows: dict[str, list[dict]], day: str,
+             window_days: int | None = None) -> tuple[dict, dict]:
+    """Data, som den så ud på ``day`` (intet fra efter dagen; evt. kun de seneste ``window_days`` dage)."""
+    lo = (dt.date.fromisoformat(day) - dt.timedelta(days=window_days)).isoformat() if window_days else ""
+    s2 = {k: [o for o in v if lo <= o[0] <= day] for k, v in series.items()}
+    r2 = {k: [r for r in v if lo <= str(r.get("date"))[:10] <= day] for k, v in eod_rows.items()}
+    return s2, r2
+
+
+def levels_at(series: dict[str, list[tuple[str, float]]], eod_rows: dict[str, list[dict]], buffett: dict | None,
+              day: str) -> dict[str, str]:
+    """Hvert signals tællende farve på en tidligere dag (til "frisk"-reglen)."""
+    s2, r2 = truncate(series, eod_rows, day)
+    return {s["id"]: tm.counted_level(s) for s in all_signals(s2, r2, buffett, day) if not s["stale"]}
+
+
+def assess(sig: list[dict], prev_levels: dict[str, str] | None = None, swan_rule: str | None = None) -> dict:
+    """Niveau og sort svane ud fra signalerne. ``prev_levels`` = farverne SWAN_FRESH_DAYS dage før (None = ukendt,
+    så tæller alle røde som nye – hellere en alarm for meget end en for lidt)."""
+    rule = swan_rule or SWAN_RULE
+    if rule not in SWAN_RULES:
+        raise ValueError(f"ukendt sort svane-regel: {rule}")
     live = [s for s in sig if not s["stale"]]
     # Baggrund (tm.BACKGROUND: værdiansættelse, rentebyrde, chippriser) kan ligge rødt i årevis: tallet vises rødt, men
     # tæller højst som gult – i niveauet, i sort svane, i temaernes farve og i "selvtilfredshed".
     reds = [s for s in live if tm.counted_level(s) == "red"]
     yellows = [s for s in live if tm.counted_level(s) == "yellow"]
     shocks = [s for s in live if s["shock"]]
-    # Sort svane = et chok, eller røde signaler i mindst tre forskellige temaer på én gang. Flere røde i samme tema
-    # (fx olie både i niveau og år til år) er ét problem, ikke tre.
+    # Flere røde i samme tema (fx olie både i niveau og år til år) er ét problem, ikke tre.
     red_themes = sorted({s["theme"] for s in reds})
-    swan = bool(shocks) or len(red_themes) >= 3
-    level = "red" if reds else "yellow" if yellows else "green"
-    if swan:
-        level = "red"
+    fresh = [s for s in reds if prev_levels is None or prev_levels.get(s["id"]) != "red"]
+    if rule == "kun_chok":
+        swan = bool(shocks)
+    elif rule == "frisk":
+        swan = bool(shocks) or (len(red_themes) >= 3 and bool(fresh))
+    else:
+        swan = bool(shocks) or len(red_themes) >= 3
+    level = "red" if (reds or swan) else "yellow" if yellows else "green"
+    return {"live": live, "reds": reds, "yellows": yellows, "shocks": shocks, "red_themes": red_themes,
+            "fresh": fresh, "swan": swan, "level": level, "rule": rule}
+
+
+def build(series: dict[str, list[tuple[str, float]]], eod_rows: dict[str, list[dict]], buffett: dict | None,
+          ref_day: str, *, generated_at: str | None = None, sources_ok: dict | None = None,
+          prev_levels: dict[str, str] | None = None, swan_rule: str | None = None) -> dict:
+    sig = all_signals(series, eod_rows, buffett, ref_day)
+    b = next((s for s in sig if s["id"] == "buffett"), None)
+    a = assess(sig, prev_levels, swan_rule)
+    live, reds, yellows, shocks, red_themes = a["live"], a["reds"], a["yellows"], a["shocks"], a["red_themes"]
+    swan, level = a["swan"], a["level"]
     # Høj værdiansættelse + rødt = hårdere fald muligt: nævnes i overskriften
     rich = bool(b and b["level"] == "yellow")
     if swan:
-        head = "Sort svane-varsel: " + ", ".join(s["label"] for s in (shocks or reds)[:3])
+        head = "Sort svane-varsel: " + ", ".join(s["label"] for s in (shocks or a["fresh"] or reds)[:3])
     elif level == "red":
         tl = {t[0]: t[1] for t in tm.THEMES}
         head = "Rød: alvorlig stress i " + ", ".join(
@@ -368,6 +420,7 @@ def build(series: dict[str, list[tuple[str, float]]], eod_rows: dict[str, list[d
     th = tm.themes(sig)
     return {"schema": 2, "profile": PROFILE, "ref_date": ref_day, "generated_at": generated_at,
             "level": level, "black_swan": swan, "headline": head, "red_themes": red_themes,
+            "swan_rule": a["rule"], "fresh_reds": [x["label"] for x in a["fresh"]] if prev_levels is not None else None,
             "themes": th, "scenarios": tm.scenarios(sig), "complacency": tm.complacency(sig, th),
             "plan": PLAN["swan" if swan else level],
             "counts": {"red": len(reds), "yellow": len(yellows), "shocks": len(shocks), "signals": len(live),
@@ -405,7 +458,12 @@ def collect(ref_day: str, fred_client: Any = None, eod_client: Any = None, buffe
             except Exception:  # noqa: BLE001
                 rows[sym] = []
         ok["eodhd"] = f"{got} af {len(EOD_SERIES) + len(tm.EOD_EXTRA)} serier"
-    return build(series, rows, buffett, ref_day, sources_ok=ok)
+    prev_day = (dt.date.fromisoformat(ref_day) - dt.timedelta(days=SWAN_FRESH_DAYS)).isoformat()
+    try:
+        prev = levels_at(series, rows, buffett, prev_day) if (series or rows) else None
+    except Exception:  # noqa: BLE001 - uden fortiden tæller alle røde som nye
+        prev = None
+    return build(series, rows, buffett, ref_day, sources_ok=ok, prev_levels=prev)
 
 
 def status_line(m: dict | None) -> str:

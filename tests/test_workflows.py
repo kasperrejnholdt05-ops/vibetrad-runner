@@ -13,12 +13,12 @@ def _load(name):
     return yaml.safe_load((WF / name).read_text("utf-8"))
 
 
-def test_only_the_two_workflows_exist():
-    assert sorted(p.name for p in WF.glob("*.yml")) == ["tests.yml", "vagt.yml"]
+def test_only_the_known_workflows_exist():
+    assert sorted(p.name for p in WF.glob("*.yml")) == ["analyse.yml", "tests.yml", "vagt.yml"]
 
 
 def test_runners_pinned_and_actions_on_node24():
-    for name in ("vagt.yml", "tests.yml"):
+    for name in ("vagt.yml", "tests.yml", "analyse.yml"):
         for job in _load(name)["jobs"].values():
             assert job["runs-on"] == "ubuntu-24.04", name
             for st in job["steps"]:
@@ -50,3 +50,17 @@ def test_results_are_saved_even_on_a_red_run_and_web_triggers_tests():
     assert save.get("if") == "${{ !cancelled() }}"
     on = _load("tests.yml").get("on") or _load("tests.yml").get(True)
     assert "web/**" in on["push"]["paths"] and "runner/**" in on["push"]["paths"]
+
+
+def test_analyse_is_manual_read_only_and_uses_only_the_two_keys():
+    wf = _load("analyse.yml")
+    on = wf.get("on") or wf.get(True)
+    assert list(on) == ["workflow_dispatch"] and wf["permissions"] == {"contents": "read"}
+    (job,) = wf["jobs"].values()
+    run = next(st for st in job["steps"] if st.get("name") == "Kør analysen")
+    assert set(run["env"]) == {"EODHD_API_KEY", "FRED_API_KEY"} and "runner/analyse.py" in run["run"]
+    checkout = next(st for st in job["steps"] if str(st.get("uses", "")).startswith("actions/checkout"))
+    assert checkout["with"] == {"persist-credentials": False}
+    text = (WF / "analyse.yml").read_text("utf-8")
+    for gone in ("ANTHROPIC", "VT_PORTFOLIO", "git push", "contents: write"):
+        assert gone not in text
